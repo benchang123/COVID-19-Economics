@@ -1,0 +1,194 @@
+Data List: covid economics
+Data Updated: 2021-02-05
+
+FRED (Federal Reserve Economic Data)
+Link: https://fred.stlouisfed.org
+Help: https://fredhelp.stlouisfed.org
+Economic Research Division
+Federal Reserve Bank of St. Louis
+
+Series ID:
+LNU04032231
+
+Title:
+"Unemployment Rate - Construction Industry, Private Wage and Salary"
+Workers
+
+Source:
+U.S. Bureau of Labor Statistics
+
+Release:
+Employment Situation
+
+Units:
+Percent
+
+Frequency:
+Monthly
+
+Seasonal Adjustment:
+Not Seasonally Adjusted
+
+Notes:
+Construction employees in the construction sector include: Working
+"supervisors, qualified craft workers, mechanics, apprentices, helpers,"
+"laborers, and so forth, engaged in new work, alterations, demolition,"
+"repair, maintenance, and the like, whether working at the site of"
+construction or in shops or yards at jobs (such as precutting and
+preassembling) ordinarily performed by members of the construction
+trades.
+
+The series comes from the 'Current Population Survey (Household
+Survey)'
+
+The source code is: LNU04032231
+
+
+
+Series ID:
+LNU04032232
+
+Title:
+"Unemployment Rate - Manufacturing Industry, Private Wage and Salary"
+Workers
+
+Source:
+U.S. Bureau of Labor Statistics
+
+Release:
+Employment Situation
+
+Units:
+Percent
+
+Frequency:
+Monthly
+
+Seasonal Adjustment:
+Not Seasonally Adjusted
+
+Notes:
+The series comes from the 'Current Population Survey (Household
+Survey)'
+
+The source code is: LNU04032232
+
+
+
+Series ID:
+LNU04032233
+
+Title:
+"Unemployment Rate - Durable Goods Industry, Private Wage and Salary"
+Workers
+
+Source:
+U.S. Bureau of Labor Statistics
+
+Release:
+Employment Situation
+
+Units:
+Percent
+
+Frequency:
+Monthly
+
+Seasonal Adjustment:
+Not Seasonally Adjusted
+
+Notes:
+The series comes from the 'Current Population Survey (Household
+Survey)'
+
+The source code is: LNU04032233
+
+
+
+Series ID:
+LNU04032238
+
+Title:
+"Unemployment Rate - Financial Activities Industry, Private Wage and"
+Salary Workers
+
+Source:
+U.S. Bureau of Labor Statistics
+
+Release:
+Employment Situation
+
+Units:
+Percent
+
+Frequency:
+Monthly
+
+Seasonal Adjustment:
+Not Seasonally Adjusted
+
+Notes:
+The series comes from the 'Current Population Survey (Household
+Survey)'
+
+The source code is: LNU04032238
+
+
+
+Series ID:
+LNU04032241
+
+Title:
+"Unemployment Rate - Leisure and Hospitality, Private Wage and Salary"
+Workers
+
+Source:
+U.S. Bureau of Labor Statistics
+
+Release:
+Employment Situation
+
+Units:
+Percent
+
+Frequency:
+Monthly
+
+Seasonal Adjustment:
+Not Seasonally Adjusted
+
+Notes:
+The series comes from the 'Current Population Survey (Household
+Survey)'
+
+The source code is: LNU04032241
+
+
+
+Series ID:
+LNU04035109
+
+Title:
+Unemployment Rate - Agricultural and Related Private Wage and Salary
+Workers
+
+Source:
+U.S. Bureau of Labor Statistics
+
+Release:
+Employment Situation
+
+Units:
+Percent
+
+Frequency:
+Monthly
+
+Seasonal Adjustment:
+Not Seasonally Adjusted
+
+Notes:
+The series comes from the 'Current Population Survey (Household
+Survey)'
+
+The source code is: LNU04035109

@@ -1,0 +1,283 @@
+---
+title: "COVID ECON - RMD (DATA MANIPULATION)"
+author: "Ben Chang, Nicolas Min, Emmanuel Rodriguez"
+date: "5/1/2021"
+output: pdf_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(gridExtra)
+library(reshape2)
+library(readxl)
+library(lubridate)
+library(zoo)
+library(sjPlot)
+library(sjmisc)
+library(sjlabelled)
+library(knitr)
+library(tidyr)
+library(broom)
+library(stargazer)
+library(precrec)
+library(forecast)
+library(ggpubr)
+library(caret)
+library(Metrics)
+library(RSocrata)
+
+#Obtain working directory
+wd <- dirname(rstudioapi::getSourceEditorContext()$path) #get rmd file path
+wd <- ifelse(substr(wd,nchar(wd)-3,nchar(wd)) == 'Code', substr(wd,1,nchar(wd)-5), wd)
+setwd(wd) #set working directory
+```
+
+
+# 1. Data
+We have created our final data set (**covid_econ.csv**) by combining and cleaning data from:
+
+* Bureau of Labor Statistics
+* Google: COVID-19 Community Mobility Reports
+* Oxford: COVID-19 Government Response Tracker
+
+To reproduce plots and analysis in this document, read in **covid_econ.csv** and run codes starting from *Data Manipulation* at the end of this section.
+
+### Database creation
+```{r}
+######################################
+######## Employment data #############
+######################################
+
+# Source: Bureau of Labor Statistics
+# Link: https://download.bls.gov/pub/time.series/sm/sm.data.1.AllData
+# Series description: The original series are the SA thousand of employees at each month 
+# by sector and state
+
+#Read data
+all_data <- read.delim('https://download.bls.gov/pub/time.series/sm/sm.data.1.AllData')
+
+#Create index of series 
+#(note: other services' not included)
+index <- read.delim('https://download.bls.gov/pub/time.series/sm/sm.series') %>% 
+  filter(seasonal=='S', area_code == 00000, data_type_code == 01, 
+         industry_code == 1000000*supersector_code, state_code <= 56) %>%
+  select(c(series_id,state_code,supersector_code)) %>%
+  filter(supersector_code %in% c(10, 20, 30, 41, 42, 43, 50, 55, 60, 65, 70, 90))
+states_index <- read.delim('https://download.bls.gov/pub/time.series/sm/sm.state')
+supersector_index <- read.delim('https://download.bls.gov/pub/time.series/sm/sm.supersector')
+
+
+
+index <-
+  index %>% merge(states_index, by = 'state_code') %>% 
+  merge(supersector_index, by = 'supersector_code') %>%
+  select(series_id, state_name, supersector_name)
+
+
+##Filter data
+series <- unique(index[,1])
+filtered_data <- all_data %>% filter(series_id %in% series) %>% 
+  merge(index, by='series_id') %>% 
+  mutate(month = substr(period,2,3)) %>%
+  filter(year >= 2019) %>%
+  select(value, month, year, state_name, supersector_name)
+
+
+##Transform data
+
+#Obtain monthly change and drop off 2019 (jan-nov)
+employment_data <- filtered_data %>% 
+  mutate(emp_monthly_change = as.numeric(value)/lag(as.numeric(value))-1) %>%
+  mutate(year_month = paste0(year,month)) %>%
+  filter(year_month >= 201912) %>%
+  select(value, emp_monthly_change, month, year, state_name, supersector_name)
+
+#Built date variable
+dates <-
+  as.Date(as.yearmon(paste(
+    employment_data$year, employment_data$month, sep = '-'
+  )), frac = 1)
+employment_data <- employment_data %>% 
+  mutate(date = dates) %>% 
+  select(date, value, emp_monthly_change, state_name, supersector_name) 
+
+colnames(employment_data)[2] <- 'employees'
+
+
+
+##########################
+##### Mobility data ######
+##########################
+
+# Source: Google
+
+#Read data
+mobility_original <- read.csv('Data/2020_US_Region_Mobility_Report.csv', header = T, na.strings ="") %>% 
+  mutate(date = as.Date(date)) %>% 
+  filter(is.na(sub_region_2) & !is.na(sub_region_1)) %>% 
+  select(c(date, sub_region_1, retail_and_recreation_percent_change_from_baseline,
+           grocery_and_pharmacy_percent_change_from_baseline, parks_percent_change_from_baseline,
+           transit_stations_percent_change_from_baseline, workplaces_percent_change_from_baseline,
+           residential_percent_change_from_baseline)) %>% 
+  'colnames<-'(c('date','state_name','Mob_ret_rec','Mob_gro_pha', 'Mob_parks','Mob_transit','Mob_work','Mob_res'))
+
+
+#Seasonal adjusted daily data (only taking residential mobility and retail and recreation
+
+mobility <- mobility_original %>%
+  select(date, state_name, Mob_res, Mob_ret_rec) %>% mutate(Mob_res_SA = NA, Mob_ret_SA = NA)
+
+states <- unique(mobility$state_name)
+for(i in 1:length(states)){
+  state <- states[i]
+  
+  state_data <- mobility %>% filter(state_name == state) %>% select(date, Mob_res, Mob_ret_rec)
+  #Residential index time series adjustment
+  ts1 <-
+    ts(state_data$Mob_res,
+       frequency = 7,
+       start = c(2020, as.numeric(format(
+         as.Date('2020-02-15'), "%j"
+       ))))
+  decompose_ts1 <- decompose(ts1, 'additive')
+  adjust_ts1 <- ts1 - decompose_ts1$seasonal
+  #Retail and recreation time series adjustment
+  ts2 <-
+    ts(state_data$Mob_ret_rec,
+       frequency = 7,
+       start = c(2020, as.numeric(format(
+         as.Date('2020-02-15'), "%j"
+       ))))
+  decompose_ts2 <- decompose(ts2, 'additive')
+  adjust_ts2 <- ts2 - decompose_ts2$seasonal
+  
+  mobility[mobility$state_name == state,]$Mob_res_SA <- adjust_ts1
+  mobility[mobility$state_name == state,]$Mob_ret_SA <- adjust_ts2
+}
+
+#Computing 30 days change (to obtain the monthly change)
+mobility <- mobility %>% mutate(delta_Mob_res_SA = NA, delta_Mob_ret_SA=NA)
+states <- unique(mobility$state_name)
+for(i in 1:length(states)){
+  state <- states[i]
+  
+  mob1 <- mobility %>% filter(state_name == state) %>% select(Mob_res_SA)
+  delta_mob1 <- unname(unlist(mob1/lag(mob1, n=30)-1))
+  
+  mob2 <- mobility %>% filter(state_name == state) %>% select(Mob_ret_SA)
+  delta_mob2 <- unname(unlist(mob2/lag(mob2, n=30)-1))
+  
+  mobility[mobility$state_name == state,]$delta_Mob_res_SA <- delta_mob1
+  mobility[mobility$state_name == state,]$delta_Mob_ret_SA <- delta_mob2
+}
+
+
+
+#########################
+#### Stringency data ####
+#########################
+
+#load data
+stringency_us <- read.csv("https://raw.githubusercontent.com/OxCGRT/USA-covid-policy/master/data/OxCGRT_US_latest.csv")
+stringency_us <- stringency_us %>%
+  select(Date, RegionName, StringencyIndex) %>% filter(RegionName != '')
+
+#Modify name of one state
+stringency_us[stringency_us$RegionName == 'Washington DC',]$RegionName <- rep('District of Columbia', length(stringency_us[stringency_us$RegionName == 'Washington DC',]$RegionName))
+
+#Convert dates
+stringency_us <- stringency_us %>% mutate(date = as.Date(as.character(Date), '%Y%m%d')) %>% 
+  select(date, RegionName, StringencyIndex) %>% 
+  'colnames<-'(c('date','state_name', 'stringency_index'))
+
+#Compute monthly change of stringency index
+stringency_us <- stringency_us %>% mutate(delta_stringency_index = NA)
+states <- unique(stringency_us$state_name)
+for(i in 1:length(states)){
+  state <- states[i]
+  
+  str <- stringency_us %>% filter(state_name == state) %>%
+    select(stringency_index)
+  delta_str <- unname(unlist(str - lag(str, n=30)))
+  
+  stringency_us[stringency_us$state_name == state,]$delta_stringency_index <- delta_str
+}
+
+
+#########################
+##### Merge all data ####
+#########################
+
+#Merge employment and mobility
+
+data <- merge(employment_data, mobility, by.x=c('date','state_name'))
+data <- merge(data, stringency_us, by.x = c('date','state_name'))
+
+
+modified_data <- data
+colnames(modified_data)[4] <- c("change_in_emp")
+colnames(modified_data)[5] <- c("Sector")
+
+
+###########################
+#### Control variables ####
+###########################
+
+###Covid Cases and deaths per state####
+
+#Read data from CDC
+covid_cases_original  <- read.socrata("https://data.cdc.gov/resource/9mfq-cb36.json")
+states_abb <- read.csv('data/States_abbrev.csv')%>% 
+  'colnames<-'(c('state_name', 'abbrev','code')) %>%
+  select(state_name, code)
+
+#Data management
+covid_cases <- merge(covid_cases_original, states_abb, by.x = 'state', by.y = 'code', all.x = T) %>%
+  mutate(date = as.Date(submission_date)) %>%
+  select(state_name, date, tot_cases, tot_death) %>%
+  arrange(state_name,date) %>%
+  mutate(delta_monthly_tot_cases = NA, delta_monthly_tot_death = NA) %>%
+  drop_na(state_name)
+
+#Computing 30 day percent change of total cases and deaths
+for(state in states){
+  cases <- covid_cases %>% filter(state_name == state) %>% select(tot_cases) %>% unlist()
+  delta_cases <- as.numeric(cases)/lag(as.numeric(cases),30)-1
+  covid_cases[covid_cases$state_name == state,]$delta_monthly_tot_cases <- delta_cases
+  
+  death <- covid_cases %>% filter(state_name == state) %>% select(tot_death) %>% unlist()
+  delta_death <- as.numeric(death)/lag(as.numeric(death),30)-1
+  covid_cases[covid_cases$state_name == state,]$delta_monthly_tot_death <- delta_death
+}
+
+
+###Blue and red states
+#Blues: vote for Democrats constantly since 2000
+#Reds: Vote for Republicans constantly since 2000
+#Source: https://www.270towin.com/content/blue-and-red-states
+blue <- c('WA','OR','CA','MN','IL','NY','HI','VT','ME','MA','RI','CT','NJ','DE','MD','DC','ME')
+red <- c('AK','ID','MT','WY','UT','ND','SD','NE','KS','OK','TX','MO','AR','LA','IN','KY','TN','MS','AL','WV','SC')
+toss <- c('NV', 'AZ','CO','NM','IA','WI','MI','IN','OH','PA','NH','VA','NC','GA','FL')
+
+states_color <- states_abb %>% mutate(blue_state = NA, red_state = NA, toss_state = NA)
+states_color$blue_state <- ifelse(states_abb$code %in% blue, 1, 0)
+states_color$red_state <- ifelse(states_abb$code %in% red, 1, 0)
+states_color$toss_state <- ifelse(states_abb$code %in% toss, 1, 0)
+
+states_color <- states_color %>% select(state_name, blue_state, red_state, toss_state)
+
+
+## Merge control variables to the original data base
+data_with_control <- merge(modified_data, covid_cases, by.x=c('date','state_name'))
+data_with_control <- merge(data_with_control, states_color, by.x='state_name')
+
+
+
+#########################
+##### Write csv ####
+#########################
+
+write.csv(data_with_control, file = "data_with_control.csv")
+```

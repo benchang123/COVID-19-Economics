@@ -1,0 +1,501 @@
+---
+title: "COVID-19-Economics EDA"
+author: "Benjamin Chang, Nicolas Min, Emmanuel Rodriguez"
+date: "February 18, 2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(gridExtra)
+
+workdirect='C:/Users/bench/Downloads/STAT 222/Project/Data/'
+```
+
+# For Mobility Dataset
+
+[Data not in GitHub, can be found here](https://www.gstatic.com/covid19/mobility/Region_Mobility_Report_CSVs.zip)
+
+```{r Mobility}
+setwd(workdirect)
+mobility=read.csv('2020_US_Region_Mobility_Report.csv', header = T, na.strings ="")
+
+#convert to date format
+mobility$date=as.Date(mobility$date)
+
+##Visualization
+
+#subset data
+usMob=mobility[is.na(mobility$sub_region_1),]
+caliMob=mobility[which(mobility$iso_3166_2_code=='US-CA'),]
+
+#US
+
+#Grocery and Pharmacy
+
+ggplot(usMob, aes(x = date, y = grocery_and_pharmacy_percent_change_from_baseline, group=1)) +
+  geom_path()+ theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = 'Date', y = 'Percent Change',
+  title = 'US Grocery and Pharmacy Percent Change')
+
+#Recreation Percent Change
+
+ggplot(usMob, aes(x = date, y = retail_and_recreation_percent_change_from_baseline, group=1)) +
+  geom_path()+ theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = 'Date', y = 'Percent Change',
+  title = 'US Recreation Percent Change')
+
+#Residential Percent Change
+
+ggplot(usMob, aes(x = date, y = residential_percent_change_from_baseline, group=1)) +
+  geom_path()+ theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = 'Date', y = 'Percent Change',
+  title = 'US Residential Percent Change')
+
+#California
+
+#Recreation Percent Change
+
+ggplot(caliMob, aes(x = date, y = grocery_and_pharmacy_percent_change_from_baseline, group=1)) +
+  geom_path()+ theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = 'Date', y = 'Percent Change',
+  title = 'California Grocery and Pharmacy Percent Change')
+
+#Recreation Percent Change
+
+ggplot(caliMob, aes(x = date, y = retail_and_recreation_percent_change_from_baseline, group=1)) +
+  geom_path()+ theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = 'Date', y = 'Percent Change',
+  title = 'California Recreation Percent Change')
+
+#Residential Percent Change
+
+ggplot(caliMob, aes(x = date, y = residential_percent_change_from_baseline, group=1)) +
+  geom_path()+ theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = 'Date', y = 'Percent Change',
+  title = 'California Residential Percent Change')
+
+```
+
+## Some Findings:
+
+- The same pattern occured in the US and California for all different mobility analysis
+
+- For mobility data regarding Grocery and Pharmacy, there was a initial increase due to people rushing to stock up for lockdown, then a general decrease
+  - Possibly due to restructions for indoor capacity, so lines were formed and it causes a incentive to only have 1 family member go grocery shopping
+- For Recreation, there is a sharp decrease followed by a level off
+  - This can be due to people complying to health restrictions in the beginning, but people were tired of staying indoors all day
+- For Residential, there is a opposite pattern as recreation, which might occur due to the same reasoning as mentioned above
+
+# Unemployment Dataset
+
+```{r State Unemployment}
+setwd(workdirect)
+unemploy=read.csv('UnemploySA.csv', header = T, na.strings ="")
+
+## Data Cleaning
+
+#title of columns
+nameTitle=c('FIPS Code','State and area','Year','Month', 'Civilian non-institutional population','Civilian labor force','Percent of population','Employment','Percent of population','Unemployment Total','Unemployment Rate' )
+
+names(unemploy) <- nameTitle
+
+unemploy=unemploy[-c(seq(1,7)),]
+
+## Visualization
+
+#subset data
+caliUnem=unemploy[which(unemploy$'State and area'=='California'),]
+
+#for cali
+
+plot(caliUnem$Year, caliUnem$'Unemployment Rate', col = 'black', type = 'l',
+main = 'California Unemployment Rate by Year', xlab = 'Year', 
+ylab = 'Unemployment Rate (%)')
+
+#zoomed cali
+
+plot(caliUnem$Month[caliUnem$Year>2019], caliUnem$'Unemployment Rate'[caliUnem$Year>2019], col = 'black', type = 'l',
+main = 'California Unemployment Rate During 2020', xlab = 'Month', 
+ylab = 'Unemployment Rate (%)')
+
+```
+
+## Some Findings:
+- The unemployment rate in this dataset was seasonally adjusted in California
+
+- For the graph that plotted years since 1976:
+  - There seems to be an incease in unemployment rate then there is a recession
+- For the graph that plotted the months in 2020:
+  - There is a huge spike in unemployment when health resrictions were created, followed by a decrease until around Thanksgiving
+  - This might be due to a fiscal impact on multiple companies as people are staying home and not going outside
+
+# Covid Cases over Time
+
+```{r Covid Cases}
+setwd(workdirect)
+covid=read.csv('uscases.csv', header = T, na.strings ="")
+covidstate=read.csv('usstatecases.csv', header = T, na.strings ="")
+
+##Initial Cleaning
+
+#convert to date format
+covidstate$date=as.Date(covidstate$date)
+covid$date=as.Date(covid$date)
+
+calicovid=covidstate[which(covidstate$state=='California'),]
+
+#new cases
+calicovid=calicovid %>% mutate(newcases = c(0,diff(cases)))
+
+covid=covid %>% mutate(newcases = c(0,diff(cases)))
+
+## Visualizations
+
+#visualizations for cali
+
+ggplot(calicovid, aes(x = date, y = cases, group=1)) +
+  geom_path()+ theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = 'Date', y = 'COVID-19 Cases',
+  title = 'California COVID-19 Cases over Time')
+
+ggplot(calicovid, aes(x = date, y = newcases, group=1)) +
+  geom_path()+ theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = 'Date', y = 'COVID-19 New Cases',
+  title = 'California COVID-19 New Cases over Time')
+
+
+#for us
+
+ggplot(covid, aes(x = date, y = cases, group=1)) +
+  geom_path()+ theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = 'Date', y = 'COVID-19 Cases',
+  title = 'US COVID-19 Cases over Time')
+
+ggplot(covid, aes(x = date, y = newcases, group=1)) +
+  geom_path()+ theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = 'Date', y = 'COVID-19 New Cases',
+  title = 'US COVID-19 New Cases over Time')
+
+```
+
+## Some Findings:
+- For the COVID cases in US:
+  -There seems to be a small spike around March and one around June
+    - This might be due to non-strict health restrictions in some states, causing the virus to spread
+  - There is a huge spike around the holidays of 2020
+    - People might have traveled home to family and ignored recommendations
+
+- For the COVID cases in California:
+  - There is only one small spike around June due to effective health restrictions
+  - The asme spike occured over the holidays of 2020 due to peopel traveling home
+
+# For Unemployment (Sex, Race) Dataset
+
+```{r Unemployment Micro}
+setwd(workdirect)
+unemploym=read.csv('unemploymicro.csv', header = T, na.strings ="")
+
+##Cleaning
+
+#corresponding Id to sex,race
+nameID=c('LNS14000000','LNS14000003','LNS14000006','LNS14000009', 'LNS14000025','LNS14000026','LNS14032183')
+nameTitle=c('Overall','White','Black','Latino', 'Men','Women','Asian')
+
+for (i in 1:length(nameID)){
+  unemploym$Series.ID[unemploym$Series.ID==nameID[i]]=nameTitle[i]
+}
+
+##Visualizations
+
+# for (i in 1:length(nameID)){
+#   #subset data
+#   dfdiv=unemploym[which(unemploym$Series.ID==nameTitle[i]),]
+#   
+#   #convert string to factor
+#   dfdiv$Label = factor(dfdiv$Label, levels = dfdiv$Label)
+#   
+#   #plot
+#   print(ggplot(dfdiv, aes(x = Label, y = Value, group=Series.ID, color=Series.ID)) +
+#   geom_path()+geom_point() + theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+#   labs(x = 'Month', y = 'Unemployment Rate (%)',
+#        title = paste(nameTitle[i],'Monthly Unemployment Rate')))
+# }
+
+dfrace=unemploym[which(unemploym$Series.ID %in% c('Overall','White','Black','Latino', 'Asian')),]
+dfgender=unemploym[which(unemploym$Series.ID %in% c('Overall','Men','Women')),]
+
+ggplot(dfrace, aes(x = Label, y = Value, group=Series.ID, color=Series.ID)) +
+  geom_point() + geom_line()+theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = 'Month', y = 'Unemployment Rate (%)',
+       title = 'Monthly Unemployment Rate by Race')
+
+ggplot(dfgender, aes(x = Label, y = Value, group=Series.ID, color=Series.ID)) +
+  geom_point() + geom_line()+theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = 'Month', y = 'Unemployment Rate (%)',
+       title = 'Monthly Unemployment Rate by Gender')
+
+##Stat Tests
+
+#subset data
+dfwhite=unemploym[which(unemploym$Series.ID=='White'),]
+dflatino=unemploym[which(unemploym$Series.ID=='Latino'),]
+dfasian=unemploym[which(unemploym$Series.ID=='Asian'),]
+dfblack=unemploym[which(unemploym$Series.ID=='Black'),]
+
+dfwomen=unemploym[which(unemploym$Series.ID=='Women'),]
+dfmen=unemploym[which(unemploym$Series.ID=='Men'),]
+
+#t tests
+##white and latino
+t.test(dfwhite$Value,dflatino$Value)
+
+## black and asian
+t.test(dfblack$Value,dfasian$Value)
+
+## asian and latino
+t.test(dfasian$Value,dflatino$Value)
+
+## women and men
+t.test(dfwomen$Value,dfmen$Value)
+
+```
+
+## Some Findings:
+- On average, the unemployment rate between women were a bit larger than men
+- Latinos were affected the most in terms of unemployment rate due to covid, while white was affected the least
+  - a t-test was ran against the unemployment rate and we obtained a p-value of 0.06, which means that the difference is not statistically significant
+
+# For CPI Dataset
+[Link to Data](https://www.bls.gov/data/#prices)
+```{r}
+#import data
+setwd(workdirect)
+cpi_all_adj <- read.csv('cpi_all_adj.csv', header = T, na.strings ="")
+cpi_all_adj$Series.ID <- 'all_adj'
+cpi_all_notadj <- read.csv('cpi_all_notadj.csv', header = T, na.strings ="")
+cpi_all_notadj$Series.ID <- 'all_unadj'
+cpi_lessfood_adj <- read.csv('cpi_lessfood_adj.csv', header = T, na.strings ="")
+cpi_lessfood_adj$Series.ID <- 'less_food&nrg_adj'
+cpi_lessfood_notadj <- read.csv('cpi_lessfood_notadj.csv', header = T, na.strings ="")
+cpi_lessfood_notadj$Series.ID <- 'less_food&nrg_unadj'
+cpi <- rbind(cpi_all_adj, cpi_all_notadj, cpi_lessfood_adj, cpi_lessfood_notadj)
+
+#clean data - get the dates 
+cpi$Period <- str_replace(cpi$Period, "M", "")
+cpi$month <- paste(cpi$Year, cpi$Period, '01', sep = '-')
+cpi$month <- as.Date(cpi$month)
+
+#plot
+ggplot(cpi, aes(x=month, y=Value, group=Series.ID, color=Series.ID)) +
+  geom_line()+
+  geom_point()+
+  ylab("CPI") +
+  xlab("Month") +
+  ggtitle("CPI by Month") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  theme(legend.title = element_blank())
+```
+
+## Findings:
+
+- We see a dip in the price index. Perhaps this is due to people getting unemployed. 
+- the aggregate demand cannot keep up with the supply of the nation.
+
+
+```{r}
+#import 2008 data
+setwd(workdirect)
+cpi_lessfood_adj_2008 <- read.csv('cpi_lessfood_adj_2008.csv', header = T, na.strings ="")
+cpi_lessfood_adj_2008$Series.ID <- 'less_food&nrg_adj'
+cpi_lessfood_notadj_2008 <- read.csv('cpi_lessfood_notadj_2008.csv', header = T, na.strings ="")
+cpi_lessfood_notadj_2008$Series.ID <- 'less_food&nrg_unadj'
+cpi_less_food_2008 <- rbind(cpi_lessfood_adj_2008, cpi_lessfood_notadj_2008)
+cpi_less_food_2020 <- rbind(cpi_lessfood_adj, cpi_lessfood_notadj)
+
+#clean data - get the dates 
+cpi_less_food_2008$Period <- str_replace(cpi_less_food_2008$Period, "M", "")
+cpi_less_food_2008$month <- paste(cpi_less_food_2008$Year, cpi_less_food_2008$Period, '01', sep = '-')
+cpi_less_food_2008$month <- as.Date(cpi_less_food_2008$month)
+cpi_less_food_2020$Period <- str_replace(cpi_less_food_2020$Period, "M", "")
+cpi_less_food_2020$month <- paste(cpi_less_food_2020$Year, cpi_less_food_2020$Period, '01', sep = '-')
+cpi_less_food_2020$month <- as.Date(cpi_less_food_2020$month)
+
+p1 <- ggplot(cpi_less_food_2008, aes(x=month, y=X12.Month...Change, group=Series.ID, color=Series.ID)) +
+  geom_line()+
+  geom_point()+
+  ylab("%Change in CPI") +
+  xlab("Month") +
+  ylim(1,2.6) +
+  ggtitle("12Mo %Change in CPI - 2008") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  theme(legend.title = element_blank())
+
+p2 <- ggplot(cpi_less_food_2020, aes(x=month, y=X12.Month...Change, group=Series.ID, color=Series.ID)) +
+  geom_line()+
+  geom_point()+
+  ylab("%Change in CPI") +
+  xlab("Month") +
+  ylim(1,2.6) +
+  ggtitle("12Mo %Change in CPI - 2020") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  theme(legend.title = element_blank())
+
+grid.arrange(p1, p2, nrow = 1)
+```
+
+## Findings:
+
+* Using the less food&energy data, we compared the % change (12 month) in CPI of 2020 to that of 2008.
+* The 2020's dip happened over much shorter period of time (in 2-3 months) than 2008's.
+* This emphasizes the magnitude of the impact of COVID-19 - how quickly it dropped the price level of goods as demands dropped (again, due to unemployment, stay at home order, and etc.). As expected, the pandemic outbreak had a greater impact on consumer goods than the financial crisis.
+
+# Prime rate and FFR Dataset
+
+[Link to Data](https://fred.stlouisfed.org/series/DPRIME)
+
+[Link to Data](https://fred.stlouisfed.org/series/FEDFUNDS)
+
+```{r}
+#read in data
+setwd(workdirect)
+prime_rate <- read.csv('DPRIME.csv', header = T, na.strings ="")
+fed_funds_rate <- read.csv('FEDFUNDS.csv', header = T, na.strings ="")
+rates <- left_join(prime_rate, fed_funds_rate)
+
+#clean
+rates$DATE <- as.Date(prime_rate$DATE)
+rates <- rates %>% filter(DPRIME != '.')
+
+#plot
+rates %>%
+  ggplot(aes(x = DATE)) +
+  geom_point(aes(y = DPRIME), color = 'black') +
+  geom_point(aes(y = FEDFUNDS), color = 'red') +
+  coord_cartesian(ylim=c(-0.5,10))+
+  ylab("Prime Rate") +
+  xlab("Day") +
+  ggtitle("Prime Rate by Day (Red: Federal Funds Rate)") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  theme(legend.title = element_blank())
+
+
+```
+
+## Findings:
+
+-As the Fed decided to adjust its federal funds rates (the rate that banks charge each other for short-term loans) back down to near zero level just after the pandemic outbreak, we see banks setting their prime rates low at 3.25% as well.
+
+# For Bankruptcy Dataset
+
+[Link to Data](https://www.uscourts.gov/statistics/table/f-2-three-months/bankruptcy-filings/2020/12/31)
+
+```{r}
+library(readxl)
+setwd(workdirect)
+bankruptcy_california <- read_excel("bankruptcy_california.xlsx")
+bankruptcy_california$time=as.Date(bankruptcy_california$time)
+
+ggplot(bankruptcy_california, aes(x=time, y=TotalAllChapters, group=CircuitandDistrict, color=CircuitandDistrict)) +
+  geom_line()+
+  geom_point()+
+  ylab("Total Bankruptcy Cases (All Chapters)") +
+  xlab("Quarter") +
+  ggtitle("Bankruptcy Filings in CA by Quarter") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  theme(legend.title = element_blank())
+
+```
+
+## Some Findings:
+
+- Data only is by quarter, so we have manually combined the California data from 2018 to 2020.
+- All in all, the bankruptcy dropped after the COVID-19! This is counter intuitive.
+- We looked at the bankruptcy data to see the impact of COVID-19 on the most economically vulnerable people. However, looking at the decrease of bankruptcy after the pandemic, we noticed perhaps bankruptcy data is not a very representative economic indicator. There are too many variables that are in play: significant slowdown in the government/administrative process, PPP loan, and etc. In fact, the slowdown in the government is easily observed in many places. One good example is from the SSA (Social Security Administration)'s disability processing data (not included in this report) 
+- We observed that SSA has been seeing significant delays in processing claims and transferring disability applications to the state agencies. 
+
+
+# Stringency dataset
+[Link to Data](https://www.bsg.ox.ac.uk/research/research-projects/coronavirus-government-response-tracker#data)
+
+[Link to Data](https://github.com/OxCGRT/USA-covid-policy)
+
+```{r}
+#load data
+setwd(workdirect)
+stringency_us <- read.csv("https://raw.githubusercontent.com/OxCGRT/USA-covid-policy/master/data/OxCGRT_US_latest.csv")
+
+stringency_states <- stringency_us[stringency_us$RegionName!="",]
+
+#plot (stringency)
+ggplot(stringency_states) +
+  geom_line(aes(x=Date, y=StringencyIndex), color = "black")+
+  ylab("Stringency Index") +
+  xlab("Date") +
+  ggtitle("Stringency Level by State") +
+  theme_bw() +
+  theme(legend.title = element_blank(), axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  facet_wrap("RegionName")
+
+```
+
+Some findings:
+* We realized that the Baek et al paper looks at Stay-at_Home (SAH) order almost as a binary variable. During the time when the paper was written, this approach made sense. However, the SAH order has taken many forms and shapes since. And we noticed different states in the U.S. impose different restrictions. Oxford U. provides an interesting data set that looks at the stringency level at a state level (calculated based on various indicators such as: school closure, workplace closure, restrictions on gathering, and etc.).
+* Using the data set, we were able to identify that some states have more stringent orders than others.
+* We plan to dig deeper into whether or not the indices that Oxford U. has come up with is valid and reliable. If it is, we think it could be a good complement to the Google's Mobility Dataset. 
+
+
+# Jobless claims (National and Cal)
+
+```{r jc_nat}
+#read data
+setwd(workdirect)
+jc_us <- read.csv('Jobless_claims_nat.csv', header = T, na.strings ="", skip=2, stringsAsFactors = F) %>%
+  'colnames<-'(c('Date','I_NSA','I_SF','I_SA','I_SA4W',
+                 'C_NSA','C_SF','C_SA','C_SA4W',
+                 'IUR_NSA','IUR_SA','COVEMP')) %>% select(Date, I_SA, C_SA)
+
+jc_cal <-  read.csv('Jobless_claims_cal.csv', header = T, na.strings ="", skip=4, stringsAsFactors = F) %>%
+  'colnames<-'(c('State','Date','Init','RWE','Cont','CovEmp',
+                 'IUR')) %>% select(Date, Init, Cont)
+#clean
+jc_cal$Date <- as.Date(jc_cal$Date, format='%m/%d/%Y')
+jc_cal$Init <- as.numeric(gsub(",", "", jc_cal$Init))
+jc_cal$Cont<- as.numeric(gsub(",", "", jc_cal$Cont))
+
+#Merge
+jobless <- merge(jc_us, jc_cal, by='Date')
+
+#plot Initial Jobless Claims
+jobless %>%
+  ggplot(aes(x = Date)) +
+  geom_line(aes(y = I_SA), color = 'black') +
+  geom_line(aes(y = Init), color = 'red') +
+  ylab("Number of Claims") +
+  xlab("Date") +
+  ggtitle("Initial Jobless claims") +
+  theme_bw()
+
+#plot Continuous Claims
+jobless %>%
+  ggplot(aes(x = Date)) +
+  geom_line(aes(y = C_SA), color = 'black') +
+  geom_line(aes(y = Cont), color = 'red') +
+  ylab("Number of Claims") +
+  xlab("Date") +
+  ggtitle("Continuing Jobless claims") +
+  theme_bw()
+
+```
+
+## Some Findings:
+
+- Some bias might be present in the continuous unemployment claims graph due to extensions in people receiving benefits

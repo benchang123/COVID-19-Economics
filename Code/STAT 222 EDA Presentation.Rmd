@@ -1,0 +1,570 @@
+---
+title: "STAT 222 EDA Presentation"
+author: "Benjamin Chang, Nicolas Min, Emmanuel Rodriguez"
+date: "March 2, 2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(gridExtra)
+library(reshape2)
+library(readxl)
+library(lubridate)
+library(zoo)
+
+#Obtain working directory
+wd <- dirname(rstudioapi::getSourceEditorContext()$path) #get rmd file path
+wd <- ifelse(substr(wd,nchar(wd)-3,nchar(wd)) == 'Code', substr(wd,1,nchar(wd)-5), wd)
+setwd(wd) #set working directory
+```
+
+# EDA 1 Sector by State
+
+```{r EDA 1}
+sector_state <- read.csv("Data/state_sector.csv")
+sector_state$X2019 <- as.numeric(sector_state$X2019)
+sector_state$X2019[is.na(sector_state$X2019)] <- 0
+
+#compute % per state
+sector_state <- sector_state %>% group_by(GeoName) %>%
+  mutate(total_emp_by_state = max(X2019)) %>% 
+  ungroup()
+
+sector_state <- sector_state %>% group_by(GeoName) %>%
+  mutate(percent_emp_by_state = X2019/total_emp_by_state) %>% 
+  ungroup()
+
+#further subset
+sector_state_subset <- sector_state %>% filter(Description == "      Arts, entertainment, and recreation" |
+                                               Description == "      Construction")
+sector_state_subset <- sector_state_subset[sector_state_subset$GeoName!="United States",]
+
+#plot
+ggplot() +
+  geom_histogram(data = sector_state_subset, aes(x=percent_emp_by_state), alpha =0.5)+
+  theme_bw()+
+  xlab("% Employed")+facet_wrap("Description")+
+  ggtitle("2019 Employment % by Sector Statistics")
+
+#max/min
+sector_state_subset_arts <-
+  sector_state %>% 
+  filter(Description == "      Arts, entertainment, and recreation") %>% 
+  arrange(desc(percent_emp_by_state)) %>% 
+  select(c(GeoName,percent_emp_by_state))
+
+sector_state_subset_arts_head <- head(sector_state_subset_arts)
+sector_state_subset_arts_tail <- tail(sector_state_subset_arts)
+
+sector_state_subset_arts_head
+sector_state_subset_arts_tail
+```
+
+# EDA 2 Stringency by State
+
+```{r EDA 2}
+#load data
+stringency_us <- read.csv("https://raw.githubusercontent.com/OxCGRT/USA-covid-policy/master/data/OxCGRT_US_latest.csv")
+stringency_states <- stringency_us[stringency_us$RegionName!="",]
+
+#party of governor
+demstates <- c("US_CA","US_CO","US_CT","US_DE","US_HI","US_IL","US_KS","US_KY","US_LA","US_ME","US_MI","US_MN","US_NV","US_NJ","US_NM","US_NY","US_NC","US_OR","US_PA","US_RI","US_VA","US_WA","US_WI")
+for (i in 1:length(demstates)){
+  stringency_states$governor[stringency_states$RegionCode == demstates[i]] <- "Dem."
+} 
+stringency_states$governor[is.na(stringency_states$governor)] <- "Rep."
+stringency_states$governor[stringency_states$RegionName=="Washington DC" ] <- "D.C." 
+
+#plot (stringency by state)
+ggplot(stringency_states) +
+  geom_line(aes(x=Date, y=StringencyIndex, color = governor))+
+  scale_color_manual(values=c( "black","blue", "red")) +
+  ylab("Stringency Index") +
+  xlab("Date (2020.01.01 - 2021.03.01)") +
+  ggtitle("Stringency Level by State") +
+  theme_bw() +
+  theme(legend.title = element_blank(), legend.position=c(0.9,0.05), axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  facet_wrap("RegionName")
+
+#compute stringency average per state
+mean_stringency <- stringency_states %>% group_by(RegionCode) %>%
+  
+  #compute avgs based on month (for unadjusted measures)
+  mutate(avg_sah = mean(C6_Stay.at.home.requirements, na.rm = TRUE)) %>%
+  mutate(avg_intl = mean(C8_International.travel.controls, na.rm = TRUE)) %>%
+  mutate(avg_transport = mean(C5_Close.public.transport, na.rm = TRUE)) %>%
+  mutate(avg_stringency = mean(StringencyIndex, na.rm = TRUE)) %>%
+  mutate(avg_school = mean(C1_School.closing, na.rm = TRUE)) %>%
+  slice(1) %>% #only take one entry per code
+  ungroup()
+
+#plot (stringency histogram)
+ggplot(mean_stringency, aes(x=avg_stringency)) +
+  geom_histogram(aes(color=governor), alpha = 0.2) +
+  scale_color_manual(values=c("black", "blue", "red")) +
+  theme_bw() +
+  theme(legend.title = element_blank(), legend.position=c(0.87,0.8))+
+  xlab("Average of Stringency Index") +
+  ylab("Frequency") +
+  ggtitle("Average Stringency Level by State")
+  
+
+#plot (sah histogram)
+ggplot(mean_stringency, aes(x=avg_sah)) +
+  geom_histogram(aes(color=governor), alpha = 0.2) +
+  scale_color_manual(values=c("black", "blue", "red")) +
+  theme_bw() +
+  theme(legend.title = element_blank(), legend.position=c(0.87,0.89))+
+  xlab("Average of SAH Index") +
+  ggtitle("Average Stay-At-Home Level by State")
+
+#plot (school histogram)
+ggplot(mean_stringency, aes(x=avg_school)) +
+  geom_histogram(aes(color=governor), alpha = 0.2) +
+  scale_color_manual(values=c("black", "blue", "red")) +
+  theme_bw() +
+  theme(legend.title = element_blank(), legend.position=c(0.87,0.89))+
+  xlab("Average of School Closing Index") +
+  ggtitle("Average School Closing Index by State")
+```
+
+# EDA 2 Mobility by State
+
+```{r EDA 2}
+#load
+mobility=read.csv('Data/2020_US_Region_Mobility_Report.csv', header = T, na.strings ="")
+
+#party of governor
+demstates <- c("US-CA","US-CO","US-CT","US-DE","US-HI","US-IL","US-KS","US-KY","US-LA","US-ME","US-MI","US-MN","US-NV","US-NJ","US-NM","US-NY","US-NC","US-OR","US-PA","US-RI","US-VA","US-WA","US-WI")
+
+for (i in 1:length(demstates)){
+  mobility$governor[mobility$iso_3166_2_code == demstates[i]] <- "Dem."
+} 
+mobility$governor[is.na(mobility$governor)] <- "Rep."
+mobility$governor[mobility$iso_3166_2_code=="US-DC" ] <- "D.C." 
+
+#date
+mobility$date=as.Date(mobility$date)
+
+#drop NA in iso code
+mobility=mobility[!is.na(mobility$iso_3166_2_code),]
+
+#plot (mobility by state)
+ggplot(mobility) +
+  geom_path(aes(x=date, y=retail_and_recreation_percent_change_from_baseline, color=governor))+
+  scale_color_manual(values=c("black", "blue", "red")) +
+  ylab("%Change in Mobility from Baseline") +
+  xlab("Date (2020.02.15 - 2021.02.23)") +
+  ggtitle("Retail and Recreational Mobility by State") +
+  theme_bw() +
+  theme(legend.title = element_blank(), legend.position=c(0.9,0.05), axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  facet_wrap("iso_3166_2_code")
+
+#compute mobility change average per state
+mean_mobility <- mobility %>% group_by(iso_3166_2_code) %>%
+  mutate(avg_retail_mob = mean(retail_and_recreation_percent_change_from_baseline, na.rm = TRUE)) %>%
+  mutate(avg_res_mob = mean(residential_percent_change_from_baseline, na.rm = TRUE)) %>%
+  slice(1) %>% #only take one entry per code
+  ungroup()
+
+#plot (recreation histogram)
+ggplot(mean_mobility, aes(x=avg_retail_mob)) +
+  geom_histogram(aes(color=governor), alpha = 0.2) +
+  scale_color_manual(values=c("black", "blue", "red")) +
+  theme_bw() +
+  theme(legend.title = element_blank(), legend.position=c(0.11,0.8))+
+  xlab("Average Retail Mobility % Change from Baseline") +
+  ylab("Frequency") +
+  ggtitle("Average Retail Mobility Statistics by State")
+
+#plot (residential histogram)
+ggplot(mean_mobility, aes(x=avg_res_mob )) +
+  geom_histogram(aes(color=governor), alpha = 0.2) +
+  scale_color_manual(values=c("black", "blue", "red")) +
+  theme_bw() +
+  theme(legend.title = element_blank(), legend.position=c(0.89,0.89))+
+  xlab("Average Residential Mobility %Change from Baseline") +
+  ggtitle("Average Residential Mobility Statistics by State")  
+```
+
+# EDA 3: Unemployment and mobility (US)
+
+```{r EDA 3}
+## Unemployment data ##
+ur_us <- read.csv('Data/US_UnemploymentRate.csv', header = T, na.strings ="")
+
+#Date format
+dates_us <- as.Date(paste0(ur_us$Year,substr(ur_us$Period, 2,3),'01'),format='%Y%m%d')
+
+ur_us <- ur_us %>% mutate(date = dates_us) %>%
+  select(c(date, Value)) %>%
+  'colnames<-'(c('Date','UR'))
+
+## Mobility data ##
+mobility_us <- read.csv('Data/2020_US_Region_Mobility_Report.csv', header = T, na.strings ="") %>% 
+  mutate(date = as.Date(date)) %>% filter(is.na(sub_region_1) & is.na(sub_region_2)) %>% 
+  select(c(date, retail_and_recreation_percent_change_from_baseline,
+                                  grocery_and_pharmacy_percent_change_from_baseline, parks_percent_change_from_baseline,
+                                  transit_stations_percent_change_from_baseline, workplaces_percent_change_from_baseline,
+                                  residential_percent_change_from_baseline)) %>% 
+  'colnames<-'(c('Date','Mob_ret_rec','Mob_gro_pha', 'Mob_parks','Mob_transit','Mob_work','Mob_res'))
+
+
+## Merge both data bases
+merge_data_us <- left_join(mobility_us, ur_us, by = 'Date', all.x = TRUE)
+
+#Fill Unemployment Rates gaps
+last_UR <- ur_us %>% filter(Date=='2020-02-01') %>% select(UR) %>% unlist() %>% as.numeric() #obtain last UR data
+merge_data_us[merge_data_us$Date=='2020-02-15','UR'] <- last_UR #replace last UR data available for February 15, 2020
+merge_data_us <- merge_data_us %>% mutate(UR = as.numeric(na.locf(UR))) #Replace NAs with previous values
+
+
+## Plot ##
+colors <- c("Unemployment Rate" = "darkblue", "Mobility. Residential" = "red", 'Mobility. Retail and Recreation' = "purple",
+            'Mobility. Grocery and Pharmacies'='darkgreen')
+
+merge_data_us %>% 
+  ggplot(aes(x=Date)) + 
+  geom_line(aes(y=UR, color='Unemployment Rate'), size=1)+
+  geom_line(aes(y=Mob_res, color='Mobility. Residential'),linetype='dashed', size=0.5)+
+  geom_line(aes(y=Mob_ret_rec, color='Mobility. Retail and Recreation'),linetype='dashed', size=0.5)+
+  geom_line(aes(y=Mob_gro_pha, color='Mobility. Grocery and Pharmacies'),linetype='dashed', size=0.5)+
+  labs(x = 'Date', y = '% (Unemployment rate) / Index (Mobility)',
+       title = 'US. Unemployment rate (solid line) and Mobility index (dashed lines)',
+       color='Legend')+
+  theme_bw()+
+  scale_color_manual(values=colors)
+```
+
+# EDA 4: Uneployment and Mobility (by State)
+
+```{r EDA 4}
+### Unemployment per state data ###
+state_data <- read.delim('https://download.bls.gov/pub/time.series/la/la.data.3.AllStatesS')
+
+#Create index of series 
+index <- read.delim('https://download.bls.gov/pub/time.series/la/la.series') %>% 
+  filter(seasonal=='S'& grepl('LASST', series_id) & measure_code == 3) %>%
+  select(c(series_id,series_title,srd_code))
+states_index <- read.delim('https://download.bls.gov/pub/time.series/la/la.state_region_division')
+
+index <- index %>% merge(states_index)
+
+#Specify states
+states <- c('California','New York', 'Nevada', 'Florida', 'Hawaii')
+series <- index %>% filter(srd_text %in% states) %>% select(series_id, srd_text)
+
+#Obtain specific data series
+state_data_sp <- state_data %>% filter(series_id %in% unlist(series), year >= 2019) %>% 
+  merge(series) %>%
+  select(c(srd_text,year, period, value))
+
+#Date format
+dates <- as.Date(paste0(state_data_sp$year,substr(state_data_sp$period, 2,3),'01'),format='%Y%m%d')
+
+state_data_sp <- state_data_sp %>% mutate(date = dates) %>%
+  select(c(date, srd_text, value)) %>%
+  'colnames<-'(c('Date','State','UR'))
+
+### Mobility data ###
+mobility <- read.csv('Data/2020_US_Region_Mobility_Report.csv', header = T, na.strings ="") %>% 
+  mutate(date = as.Date(date)) %>% filter(sub_region_1 %in% states & is.na(sub_region_2)) %>% 
+  select(c(date, sub_region_1, retail_and_recreation_percent_change_from_baseline,
+                                  grocery_and_pharmacy_percent_change_from_baseline, parks_percent_change_from_baseline,
+                                  transit_stations_percent_change_from_baseline, workplaces_percent_change_from_baseline,
+                                  residential_percent_change_from_baseline)) %>% 
+  'colnames<-'(c('Date','State','Mob_ret_rec','Mob_gro_pha', 'Mob_parks','Mob_transit','Mob_work','Mob_res'))
+
+#Merge both data bases
+merge_data <- left_join(mobility, state_data_sp, by = c('Date','State'), all.x = TRUE)
+
+#Fill Unemployment Rates gaps
+last_UR <- state_data_sp %>% filter(Date=='2020-02-01') %>% select(UR) %>% unlist() %>% as.numeric() #obtain last ur data
+merge_data[merge_data$Date=='2020-02-15','UR'] <- last_UR #replace last UR data available for February 15, 2020
+merge_data <- merge_data %>% mutate(UR = as.numeric(na.locf(UR))) #Replace NAs with previous values
+
+
+## Plots
+
+colors <- c("Unemployment Rate" = "darkblue", "Mobility. Residential" = "red", 'Mobility. Retail and Recreation' = "purple",
+            'Mobility. Grocery and Pharmacies'='darkgreen')
+
+#California
+merge_data %>% filter(State=='California') %>% 
+  ggplot(aes(x=Date)) + 
+  geom_line(aes(y=UR, color='Unemployment Rate'), size=1)+
+  geom_line(aes(y=Mob_res, color='Mobility. Residential'),linetype='dashed', size=0.5)+
+  geom_line(aes(y=Mob_ret_rec, color='Mobility. Retail and Recreation'),linetype='dashed', size=0.5)+
+  geom_line(aes(y=Mob_gro_pha, color='Mobility. Grocery and Pharmacies'),linetype='dashed', size=0.5)+
+  labs(x = 'Date', y = '% (Unemployment rate) / Index (Mobility)',
+       title = 'California. Unemployment rate (solid line) and Mobility index (dashed lines)',
+       color='Legend')+
+  theme_bw()+
+  scale_color_manual(values=colors)
+
+#New York
+merge_data %>% filter(State=='New York') %>% 
+  ggplot(aes(x=Date)) + 
+  geom_line(aes(y=UR, color='Unemployment Rate'), size=1)+
+  geom_line(aes(y=Mob_res, color='Mobility. Residential'),linetype='dashed', size=0.5)+
+  geom_line(aes(y=Mob_ret_rec, color='Mobility. Retail and Recreation'),linetype='dashed', size=0.5)+
+  geom_line(aes(y=Mob_gro_pha, color='Mobility. Grocery and Pharmacies'),linetype='dashed', size=0.5)+
+  labs(x = 'Date', y = '% (Unemployment rate) / Index (Mobility)',
+       title = 'New York. Unemployment rate (solid line) and Mobility index (dashed lines)',
+       color='Legend')+
+  theme_bw()+
+  scale_color_manual(values=colors)
+
+
+#Florida
+merge_data %>% filter(State=='Florida') %>% 
+  ggplot(aes(x=Date)) + 
+  geom_line(aes(y=UR, color='Unemployment Rate'), size=1)+
+  geom_line(aes(y=Mob_res, color='Mobility. Residential'),linetype='dashed', size=0.5)+
+  geom_line(aes(y=Mob_ret_rec, color='Mobility. Retail and Recreation'),linetype='dashed', size=0.5)+
+  geom_line(aes(y=Mob_gro_pha, color='Mobility. Grocery and Pharmacies'),linetype='dashed', size=0.5)+
+  labs(x = 'Date', y = '% (Unemployment rate) / Index (Mobility)',
+       title = 'Florida. Unemployment rate (solid line) and Mobility index (dashed lines)',
+       color='Legend')+
+  theme_bw()+
+  scale_color_manual(values=colors)
+
+
+#Hawaii
+merge_data %>% filter(State=='Hawaii') %>% 
+  ggplot(aes(x=Date)) + 
+  geom_line(aes(y=UR, color='Unemployment Rate'), size=1)+
+  geom_line(aes(y=Mob_res, color='Mobility. Residential'),linetype='dashed', size=0.5)+
+  geom_line(aes(y=Mob_ret_rec, color='Mobility. Retail and Recreation'),linetype='dashed', size=0.5)+
+  geom_line(aes(y=Mob_gro_pha, color='Mobility. Grocery and Pharmacies'),linetype='dashed', size=0.5)+
+  labs(x = 'Date', y = '% (Unemployment rate) / Index (Mobility)',
+       title = 'Hawaii. Unemployment rate (solid line) and Mobility index (dashed lines)',
+       color='Legend')+
+  theme_bw()+
+  scale_color_manual(values=colors)
+
+
+#Nevada
+merge_data %>% filter(State=='Nevada') %>% 
+  ggplot(aes(x=Date)) + 
+  geom_line(aes(y=UR, color='Unemployment Rate'), size=1)+
+  geom_line(aes(y=Mob_res, color='Mobility. Residential'),linetype='dashed', size=0.5)+
+  geom_line(aes(y=Mob_ret_rec, color='Mobility. Retail and Recreation'),linetype='dashed', size=0.5)+
+  geom_line(aes(y=Mob_gro_pha, color='Mobility. Grocery and Pharmacies'),linetype='dashed', size=0.5)+
+  labs(x = 'Date', y = '% (Unemployment rate) / Index (Mobility)',
+       title = 'Nevada. Unemployment rate (solid line) and Mobility index (dashed lines)',
+       color='Legend')+
+  theme_bw()+
+  scale_color_manual(values=colors)
+
+```
+
+# EDA 5: Unemployment vs Mobility by Time and Sector
+
+```{r EDA 5}
+mobility=read.csv('Data/2020_US_Region_Mobility_Report.csv', header = T, na.strings ="")
+sector=read.csv('Data/unemployment_sector_NSA.csv', header = T, na.strings ="")
+
+#change column title of sector data
+nameTitle=c('Date','Construction','Manufacturing','Durable Goods', 'Financial',
+            'Leisure and Hospitality','Agricultural')
+
+names(sector) <- nameTitle
+
+#convert to date format
+mobility$date=as.Date(mobility$date)
+sector$Date=as.Date(sector$Date)
+
+#subset data
+usMob=mobility[is.na(mobility$sub_region_1),]
+
+#mobility granularity day to month
+
+changemob=rep(0, 11)
+datearray=rep(0, 11)
+
+for (i in 2:12){
+  
+  if (i<10){
+    dates = paste0('2020-0',i)
+    fordatearr=paste0('0',i)
+  }
+  else
+  {
+    dates = paste0('2020-',i)
+    fordatearr=i
+  }
+  
+  datearray[i-1]=fordatearr
+  
+  monthdf=subset(usMob, substr(date, 1, 7) %in% dates)
+  
+  changemob[i-1]=monthdf[nrow(monthdf),10]-monthdf[1,10]
+}
+
+##Visualization
+
+for (i in 2:length(nameTitle)){
+  
+  #subset data
+  secdiv=sector[,i]
+  
+  changesec=diff(secdiv)
+  changesec=changesec[-c(1,length(changesec))]
+  
+  #plot
+  print(ggplot() +
+  geom_point(aes(x = changemob, y = changesec)) + 
+    geom_text(aes(x = changemob, y = changesec, label=datearray),nudge_x = -1,size = 3) + 
+    ylim(-5, 35)+
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(x = expression(Delta*'Change in Mobility (%)'), y = expression(Delta*' Sector Unemployment Rate (%)'),
+    title = paste0('Sector Unemployment Rate vs Change in Mobility (by ',nameTitle[i],')')))
+}
+
+```
+
+```{r EDA 6}
+### Unemployment per state data ###
+state_data <- read.delim('https://download.bls.gov/pub/time.series/la/la.data.3.AllStatesS')
+
+#Create index of series 
+index <- read.delim('https://download.bls.gov/pub/time.series/la/la.series') %>% 
+  filter(seasonal=='S'& grepl('LASST', series_id) & measure_code == 3) %>%
+  select(c(series_id,series_title,srd_code))
+states_index <- read.delim('https://download.bls.gov/pub/time.series/la/la.state_region_division')
+
+index <- index %>% merge(states_index)
+
+#Specify states
+states <- c('California','Utah')
+series <- index %>% filter(srd_text %in% states) %>% select(series_id, srd_text)
+
+#Obtain specific data series
+state_data_sp <- state_data %>% filter(series_id %in% unlist(series), year >= 2019) %>% 
+  merge(series) %>%
+  select(c(srd_text,year, period, value))
+
+#Date format
+dates <- as.Date(paste0(state_data_sp$year,substr(state_data_sp$period, 2,3),'01'),format='%Y%m%d')
+
+state_data_sp <- state_data_sp %>% mutate(date = dates) %>%
+  select(c(date, srd_text, value)) %>%
+  'colnames<-'(c('Date','State','UR'))
+
+
+mobilityd=read.csv('Data/2020_US_Region_Mobility_Report.csv', header = T, na.strings ="")
+
+#change column title of sector data
+nameTitle=c('California','Utah')
+
+#convert to date format
+mobilityd$date=as.Date(mobilityd$date)
+
+for (i in 1:length(nameTitle)){
+
+  #subset data by state
+  stateMob=mobilityd[is.na(mobilityd$sub_region_2),]
+  stateMob2=stateMob[stateMob$sub_region_1==nameTitle[i],]
+  
+  #mobility granularity day to month
+  
+  changemob=rep(0, 11)
+  datearray=rep(0, 11)
+  
+  for (j in 2:12){
+    
+    if (j<10){
+      dates = paste0('2020-0',j)
+      fordatearr=paste0('0',j)
+    }
+    else
+    {
+      dates = paste0('2020-',j)
+      fordatearr=j
+    }
+    
+    datearray[j-1]=fordatearr
+    
+    monthdf=subset(stateMob2, substr(date, 1, 7) %in% dates)
+    
+    changemob[j-1]=monthdf[nrow(monthdf),10]-monthdf[1,10]
+  }
+
+##Visualization
+  
+  #subset data
+  statediv=state_data_sp[state_data_sp$State==nameTitle[i],]
+  
+  changestate=diff(as.double(statediv$UR))
+  changeUR=tail(changestate,11)
+  
+  #plot
+  print(ggplot() +
+  geom_point(aes(x = changemob, y = changeUR)) + 
+    geom_text(aes(x = changemob, y = changeUR, label=datearray),nudge_x = -1,size = 3) + 
+    ylim(-5, 35)+
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(x = expression(Delta*'Change in State Mobility (%)'), y = expression(Delta*' State Unemployment Rate (%)'),
+    title = paste0('Unemployment Rate vs Change in Mobility (in ',nameTitle[i],')')))
+}
+
+```
+
+```{r EDA 7}
+#load data
+stringency_us <- read.csv("https://raw.githubusercontent.com/OxCGRT/USA-covid-policy/master/data/OxCGRT_US_latest.csv")
+stringency_states <- stringency_us[stringency_us$RegionName!="",]
+
+#change column title of sector data
+nameTitle=c('California','Utah')
+
+for (i in 1:length(nameTitle)){
+
+  stringency_states_agg=stringency_states[stringency_states$RegionName==nameTitle[i],]
+  
+  stringency_states_agg_refin=stringency_states_agg %>%
+    select('RegionName','Date','StringencyIndex')
+  
+  stringency_states_agg_refin$Date <- as.Date(paste(stringency_states_agg_refin$Date), format("%Y%m%d"))
+  
+  changestr=rep(0, 11)
+  datearray=rep(0, 11)
+  
+  for (j in 2:12){
+    
+    if (j<10){
+      dates = paste0('2020-0',j)
+      fordatearr=paste0('0',j)
+    }
+    else
+    {
+      dates = paste0('2020-',j)
+      fordatearr=j
+    }
+    
+    datearray[j-1]=fordatearr
+    
+    monthdf=subset(stringency_states_agg_refin, substr(Date, 1, 7) %in% dates)
+    
+    changestr[j-1]=monthdf[nrow(monthdf),3]-monthdf[1,3]
+  }
+
+##Visualization
+  
+  #plot
+  print(ggplot() +
+  geom_point(aes(x = changestr, y = changeUR)) + 
+    geom_text(aes(x = changestr, y = changeUR, label=datearray),nudge_x = -1,size = 3) + 
+    ylim(-5, 35)+
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(x = expression(Delta*'Change in State Stringency (%)'), y = expression(Delta*' State Unemployment Rate (%)'),
+    title = paste0('Unemployment Rate vs Change in Stringency (in ',nameTitle[i],')')))
+}
+
+```
+

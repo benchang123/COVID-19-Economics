@@ -1,0 +1,309 @@
+---
+title: "COVID ECON - RMD (MAIN)"
+author: "Ben Chang, Nicolas Min, Emmanuel Rodriguez"
+date: "5/1/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+##run "COVID ECON RMD (DATA MANIPULATION).rmd" first before this file
+
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(gridExtra)
+library(reshape2)
+library(readxl)
+library(lubridate)
+library(zoo)
+library(sjPlot)
+library(sjmisc)
+library(sjlabelled)
+library(knitr)
+library(tidyr)
+library(broom)
+library(stargazer)
+library(precrec)
+library(forecast)
+library(ggpubr)
+library(caret)
+library(Metrics)
+library(RSocrata)
+
+#Obtain working directory
+wd <- dirname(rstudioapi::getSourceEditorContext()$path) #get rmd file path
+wd <- ifelse(substr(wd,nchar(wd)-3,nchar(wd)) == 'Code', substr(wd,1,nchar(wd)-5), wd)
+setwd(wd) #set working directory
+```
+
+# Preliminary Work 
+
+## Read data
+```{r}
+#read data
+modified_data_ols <- read.csv("covid_econ_control.csv")
+```
+
+## Modify data
+```{r}
+#take out D.C.
+modified_data_ols <- modified_data_ols %>% filter(state_name != "District of Columbia")
+  
+#train and test split
+trainset <- modified_data_ols %>% filter(date != "2020-02-29")
+testset <- modified_data_ols %>% filter(date == "2020-02-29")
+
+#Q2 and rest split
+panic <- trainset %>% filter(date == "2020-04-30" | date == "2020-05-31" |date == "2020-06-30")
+non_panic <- trainset %>% filter(date != "2020-04-30" & date != "2020-05-31"  & date != "2020-06-30") 
+
+```
+
+\newpage
+---------------------------------
+# One code chunk per slide
+
+## Objective, Data Sources, Final Data 
+```{r}
+
+```
+
+## Model fitting – motivation & justification 
+```{r}
+#Employment vs mobility (by sector)
+ggplot(data = modified_data_ols, aes(x = Mob_res_SA, y = change_in_emp, color = Sector)) +
+  geom_point() + geom_smooth(se=FALSE) +
+  labs(x = "Residential Mobility (Season Adj)", y = "Change in Employment", title = "Change in Employment v. Residential Mobility (by sector)")
+
+#Employment vs Stringency (by sector)
+ggplot(data = modified_data_ols, aes(x = stringency_index, y = change_in_emp, color = Sector)) + geom_point() + geom_smooth(se=FALSE) +
+  labs(x = "Stringency Index", y = "Change in Employment", title = "Change in Employment v. Stringency Index (by sector)")
+
+```
+
+## Model fitting – State fixed effect
+```{r}
+#Employment vs mobility (by state)
+ggplot(data = modified_data_ols, aes(x = Mob_res_SA, y = change_in_emp, color = state_name)) +
+  geom_point(show.legend = FALSE) + geom_smooth(se=FALSE,show.legend = FALSE,method = lm) +
+  labs(x = "Residential Mobility (Season Adj)", y = "Change in Employment", title = "Change in Employment v. Residential Mobility (by individual state)")
+
+#Employment vs mobility (by state)
+modified_data_ols_pol=modified_data_ols
+
+modified_data_ols_pol=modified_data_ols_pol %>%
+  mutate(political = case_when(
+    modified_data_ols_pol['blue_state']==1 ~ "Blue",
+    modified_data_ols_pol['red_state']==1 ~ "Red",
+    modified_data_ols_pol['toss_state']==1 ~ "Toss"
+    ))
+
+ggplot(data = modified_data_ols_pol, aes(x = Mob_res_SA, y = change_in_emp, color = political)) +
+  geom_point(alpha = 0.2) + geom_smooth(se=FALSE,show.legend = FALSE) +
+  labs(x = "Residential Mobility (Season Adj)", y = "Change in Employment", title = "Change in Employment v. Residential Mobility (Political Affiliation)") + scale_color_manual(values=c("blue", "red", "gray")) +theme_classic()
+
+olsstate <- lm(change_in_emp ~ red_state+blue_state+ Mob_res_SA*Sector + stringency_index*Sector + tot_death, data = modified_data_ols)
+summary(olsstate)
+
+```
+
+## Model fitting – Main Model (Preliminary)
+$$\%Emp_{s,t,sec} = \alpha + \mu_{sec} + \beta_1 * f_{sec}(\%Mob_{s,t}) + \beta_2 * (Str_{s,t}) + (f_{sec}(\%Mob_{s,t})) * \beta_{3,sec} + (f_{sec}(Str_{s,t})) * \beta_{4,sec} + ..$$
+## Challenge & Solution – Peculiarity of Q2 2020
+```{r}
+#resid plot
+ols1 <- lm(change_in_emp ~ Mob_res_SA*Sector + stringency_index*Sector + blue_state + red_state + tot_death, data = modified_data_ols)
+mod_ols1 <- fortify(ols1)
+ggplot(mod_ols1, aes(x = .fitted, y = .resid)) + geom_point() +
+  theme_bw()+
+  labs(x = "Fitted Values", y = "Residuals", title = "Residuals (Entire Data Set)")
+
+#leisure plot
+ggplot(modified_data_ols[modified_data_ols$Sector=="Leisure and Hospitality",], aes(Mob_res_SA,change_in_emp, color = date))+geom_point()+geom_smooth(se=FALSE)
+```
+
+
+## Challenge & Solution – Covid cases as control
+```{r}
+#### This part uses employment and covid data bases before the data management (run "COVID ECON RMD (DATA MANIPULATION).rmd" first) ######
+
+
+#Plot 1. Employment vs COVID cases
+total_employees <- employment_data %>% group_by(date) %>% 
+  summarise(employees = sum(as.numeric(employees))) %>% 
+  as.data.frame() %>% arrange(date) %>% 
+  mutate(delta_emp = 1*(employees/lag(employees,1)-1)) %>% 
+  filter(date > '2020-01-01')
+dummy <- data.frame(date = seq(from = as.Date('2020-01-31'), to = as.Date('2021-03-31'), by=1),
+                    dummy = 0)
+total_employees <- merge(dummy, total_employees, all.x = T)
+aux1 <- na.locf(total_employees$employees)
+aux2 <- na.locf(total_employees$delta_emp)
+total_employees <- total_employees %>% mutate(employees = aux1, delta_emp = aux2) %>%
+  select(-dummy)
+total_covid <- covid_cases %>% group_by(date) %>% summarise(tot_cases = sum(as.numeric(tot_cases))) %>% as.data.frame() %>% arrange(date) %>% mutate(new_cases=tot_cases-lag(tot_cases,30)) %>% filter(!is.na(new_cases))
+dat1 <- merge(total_employees, total_covid, by='date')
+
+dat1 %>% 
+  ggplot(aes(x=date))+
+  geom_line(aes(y=employees, col='Employees'))+
+  geom_line(aes(y=(new_cases/50)+120000,col='COVID cases'))+
+  scale_y_continuous(
+    'Employees',
+    limits=c(120000,250000),
+    sec.axis = sec_axis(~ (. -120000)*50, name = '30-day new COVID cases')
+  ) +
+  theme_bw()+
+  theme(legend.position="bottom", legend.title = element_blank())+
+  ggtitle('US Employment and 30-day new COVID Cases')
+  
+  
+# Plot 2. Employment vs COVID Cases in select states
+
+total_employees <- employment_data %>% group_by(date, state_name) %>% 
+  summarise(employees = sum(as.numeric(employees))) %>% 
+  as.data.frame() %>% arrange(state_name, date) %>%
+  mutate(delta_emp = 1*(employees/lag(employees,1)-1)) %>% 
+  filter(date > '2020-01-01')
+total_covid <- covid_cases %>% group_by(date,state_name) %>% summarise(tot_cases = sum(as.numeric(tot_cases))) %>% as.data.frame() %>% arrange(state_name, date) %>% mutate(new_cases=tot_cases-lag(tot_cases,30))
+total <- merge(total_employees, total_covid, by=c('date','state_name')) %>% filter(date > '2020-02-28')
+
+ggplot(total %>% filter(state_name %in% c('California','New York','Texas', 'Pennsylvania','Virginia','Massachusetts','Ohio','Florida','Illinois','Maryland')), aes(x=delta_emp,y=new_cases, col=state_name))+
+  geom_point()+
+  theme_bw()+
+  ggtitle('Employment change and 30-day new COVID Cases for selected States', subtitle = 'End of each month from March 2020 to February 2021')+
+  scale_x_continuous(name = 'Monthly change in employment')+
+  scale_y_continuous(name = '30-day new COVID Cases')+
+  theme(legend.title = element_blank())
+```
+
+## Model fitting – Final Main Model
+```{r}
+#f(mobility) fitting for Q2-leisure in python notebook
+
+ggplot(data = panic, aes(x = Mob_res_SA, y = change_in_emp, color = Sector)) +
+  geom_point() + geom_smooth(se=FALSE) +
+  labs(x = "Residential Mobility (Season Adj)", y = "Change in Employment", title = "Change in Employment v. Residential Mobility (by sector, Q2 2020)")
+
+ggplot(data = non_panic, aes(x = Mob_res_SA, y = change_in_emp, color = Sector)) +
+  geom_point() + geom_smooth(se=FALSE) +
+  labs(x = "Residential Mobility (Season Adj)", y = "Change in Employment", title = "Change in Employment v. Residential Mobility (by sector, non-Q2 2020)")
+
+```
+
+## Challenge & Solution – Solution: Two Regressions
+```{r}
+#see python codes
+```
+
+## Prediction - Performance
+```{r}
+#see python codes
+```
+
+
+\newpage
+---------------------------------
+# BELOW: To be deleted...
+
+# To be deleted: BUNCH of OLS
+```{r}
+ols1 <- lm(change_in_emp ~ Mob_res_SA*Sector + stringency_index*Sector, data = modified_data_ols)
+summary(ols1)
+#0.1918
+
+ols1 <- lm(change_in_emp ~ Mob_res_SA*Sector + stringency_index*Sector + blue_state, data = modified_data_ols)
+summary(ols1)
+#0.1986
+
+ols1 <- lm(change_in_emp ~ Mob_res_SA*Sector + stringency_index*Sector + blue_state + red_state, data = modified_data_ols)
+summary(ols1)
+#0.2042
+
+ols1 <- lm(change_in_emp ~ Mob_res_SA*Sector + stringency_index*Sector + blue_state + red_state + tot_death, data = modified_data_ols)
+summary(ols1)
+#0.2128 (adding tot_cases 0.2129)
+
+ols1 <- lm(change_in_emp ~ Mob_res_SA*Sector + stringency_index*Sector + blue_state + red_state + tot_death, data = panic)
+summary(ols1)
+#0.6679!!
+
+ols2 <- lm(change_in_emp ~ Mob_res_SA*Sector + stringency_index*Sector + blue_state + red_state + tot_death, data = non_panic)
+summary(ols2)
+#0.145 - our variables cannot explain much variability in 'change_in_emp'
+
+```
+
+## To be deleted: RESIDUALS
+```{r}
+mod_ols1 <- fortify(ols1)
+ggplot(mod_ols1, aes(x = .fitted, y = .resid)) + geom_point() +
+  theme_bw()+
+  labs(x = "Fitted Values", y = "Residuals", title = "OLS1 Residuals")
+ggplot(mod_ols1, aes(x = Mob_res_SA, y = .resid)) + geom_point() +
+  theme_bw()+
+  labs(x = "Mob_res_SA", y = "Residuals", title = "OLS1 Residuals")
+mod_ols1[mod_ols1$.fitted < -0.25,]
+#seems like we need a separate function for leisure
+summary(as.factor(mod_ols1[mod_ols1$.fitted < -0.25,]$Sector))
+
+mod_ols2 <- fortify(ols2)
+ggplot(mod_ols2, aes(x = .fitted, y = .resid)) + geom_point() +
+  theme_bw()+
+  labs(x = "Fitted Values", y = "Residuals", title = "OLS2 Residuals")
+ggplot(mod_ols2, aes(x = Mob_res_SA, y = .resid)) + geom_point() +
+  theme_bw()+
+  labs(x = "Mob_res_SA", y = "Residuals", title = "OLS2 Residuals")
+mod_ols1[abs(mod_ols1$.resid) > 0.1,]
+#seems like we need a separate function for leisure&mining
+summary(as.factor(mod_ols2[mod_ols2$.resid > 0.1,]$Sector))
+summary(as.factor(mod_ols2[mod_ols2$.resid < -0.1,]$Sector))
+```
+
+## Searching for f(mobility)
+
+```{r}
+#figuring out the function for leisure and mining
+
+#panic version
+ggplot(panic[panic$Sector=="Leisure and Hospitality",], aes(Mob_res_SA,change_in_emp, color = date))+geom_point()+geom_smooth()
+#already looks quite linear to me.
+ggplot(panic[panic$Sector=="Leisure and Hospitality",], aes(x=Mob_res_SA,y=change_in_emp))+geom_point()+geom_smooth()
+ggplot(panic[panic$Sector=="Leisure and Hospitality",], aes(x=Mob_res_SA^(1/2),y=change_in_emp))+geom_point()+geom_smooth(method=lm)
+ggplot(panic[panic$Sector=="Mining and Logging",], aes(x=Mob_res_SA,y=change_in_emp))+geom_point()+geom_smooth()
+ggplot(panic[panic$Sector=="Mining and Logging",], aes(x=Mob_res_SA,y=change_in_emp^(1/2)))+geom_point()+geom_smooth(method=lm)
+
+#non-panic version
+ggplot(non_panic[non_panic$Sector=="Leisure and Hospitality",], aes(Mob_res_SA,change_in_emp, color = date))+geom_point()+geom_smooth(se=FALSE)
+#already looks quite linear to me.
+ggplot(non_panic[non_panic$Sector=="Leisure and Hospitality",], aes(x=Mob_res_SA,y=change_in_emp))+geom_point()+geom_smooth(method=lm)
+ggplot(non_panic[non_panic$Sector=="Leisure and Hospitality",], aes(x=Mob_res_SA^(1/2),y=change_in_emp))+geom_point()+geom_smooth(method=lm)
+ggplot(non_panic[non_panic$Sector=="Mining and Logging",], aes(x=Mob_res_SA,y=change_in_emp))+geom_point()+geom_smooth(method=lm)
+ggplot(non_panic[non_panic$Sector=="Mining and Logging",], aes(x=Mob_res_SA^(1/2),y=change_in_emp))+geom_point()+geom_smooth(method=lm)
+
+#implementing sigmoid to leisure
+
+panic$Mob_res_SA_leisig = panic$Mob_res_SA
+
+panic$Mob_res_SA_leisig[panic$Sector == "Leisure and Hospitality"] <- (-0.67/(1+exp(-0.628*(panic$Mob_res_SA[panic$Sector == "Leisure and Hospitality"])+7.779)))+0.189
+
+ols3 <- lm(change_in_emp ~ Mob_res_SA_leisig*Sector + stringency_index*Sector + blue_state + red_state + tot_death, data = panic)
+summary(ols3)
+
+mod_ols3 <- fortify(ols3)
+ggplot(mod_ols3, aes(x = .fitted, y = .resid)) + geom_point() +
+  theme_bw()+
+  labs(x = "Fitted Values", y = "Residuals", title = "OLS3 Residuals")
+```
+
+## Plots for retail (mobility vs change in employment)
+```{r}
+ggplot(data = modified_data_ols, aes(x = Mob_ret_SA, y = change_in_emp, color = Sector)) +
+  geom_point() + geom_smooth(se=FALSE) +
+  labs(x = "Retail Mobility (Season Adj)", y = "Change in Employment", title = "Change in Employment v. Retail Mobility (by sector)")
+
+ggplot(data = modified_data_ols, aes(x = Mob_res_SA, y = change_in_emp, color = Sector)) +
+  geom_point() + geom_smooth(se=FALSE) +
+  labs(x = "Residential Mobility (Season Adj)", y = "Change in Employment", title = "Change in Employment v. Residential Mobility (by sector)")
+```

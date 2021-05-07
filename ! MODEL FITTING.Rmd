@@ -1,0 +1,698 @@
+---
+title: "MODEL FITTING"
+author: "Ben Chang, Nicolas Min, Emmanuel Rodriguez"
+date: "4/1/2021"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(gridExtra)
+library(reshape2)
+library(readxl)
+library(lubridate)
+library(zoo)
+library(sjPlot)
+library(sjmisc)
+library(sjlabelled)
+library(knitr)
+library(tidyr)
+library(broom)
+library(stargazer)
+library(precrec)
+library(forecast)
+library(ggpubr)
+library(caret)
+library(Metrics)
+library(RSocrata)
+
+#Obtain working directory
+wd <- dirname(rstudioapi::getSourceEditorContext()$path) #get rmd file path
+wd <- ifelse(substr(wd,nchar(wd)-3,nchar(wd)) == 'Code', substr(wd,1,nchar(wd)-5), wd)
+setwd(wd) #set working directory
+```
+
+
+# 1. Data
+We have created our final data set (**covid_econ.csv**) by combining and cleaning data from:
+
+* Bureau of Labor Statistics
+* Google: COVID-19 Community Mobility Reports
+* Oxford: COVID-19 Government Response Tracker
+
+To reproduce plots and analysis in this document, read in **covid_econ.csv** and run codes starting from *Data Manipulation* at the end of this section.
+
+### Database creation
+```{r}
+######################################
+######## Employment data #############
+######################################
+
+# Source: Bureau of Labor Statistics
+# Link: https://download.bls.gov/pub/time.series/sm/sm.data.1.AllData
+# Series description: The original series are the SA thousand of employees at each month 
+# by sector and state
+
+#Read data
+all_data <- read.delim('https://download.bls.gov/pub/time.series/sm/sm.data.1.AllData')
+
+#Create index of series 
+#(note: other services' not included)
+index <- read.delim('https://download.bls.gov/pub/time.series/sm/sm.series') %>% 
+  filter(seasonal=='S', area_code == 00000, data_type_code == 01, 
+         industry_code == 1000000*supersector_code, state_code <= 56) %>%
+  select(c(series_id,state_code,supersector_code)) %>%
+  filter(supersector_code %in% c(10, 20, 30, 41, 42, 43, 50, 55, 60, 65, 70, 90))
+states_index <- read.delim('https://download.bls.gov/pub/time.series/sm/sm.state')
+supersector_index <- read.delim('https://download.bls.gov/pub/time.series/sm/sm.supersector')
+
+
+
+index <-
+  index %>% merge(states_index, by = 'state_code') %>% 
+  merge(supersector_index, by = 'supersector_code') %>%
+  select(series_id, state_name, supersector_name)
+
+
+##Filter data
+series <- unique(index[,1])
+filtered_data <- all_data %>% filter(series_id %in% series) %>% 
+  merge(index, by='series_id') %>% 
+  mutate(month = substr(period,2,3)) %>%
+  filter(year >= 2019) %>%
+  select(value, month, year, state_name, supersector_name)
+
+
+##Transform data
+
+#Obtain monthly change and drop off 2019 (jan-nov)
+employment_data <- filtered_data %>% 
+  mutate(emp_monthly_change = as.numeric(value)/lag(as.numeric(value))-1) %>%
+  mutate(year_month = paste0(year,month)) %>%
+  filter(year_month >= 201912) %>%
+  select(value, emp_monthly_change, month, year, state_name, supersector_name)
+
+#Built date variable
+dates <-
+  as.Date(as.yearmon(paste(
+    employment_data$year, employment_data$month, sep = '-'
+  )), frac = 1)
+employment_data <- employment_data %>% 
+  mutate(date = dates) %>% 
+  select(date, value, emp_monthly_change, state_name, supersector_name) 
+
+colnames(employment_data)[2] <- 'employees'
+
+
+
+##########################
+##### Mobility data ######
+##########################
+
+# Source: Google
+
+#Read data
+mobility_original <- read.csv('Data/2020_US_Region_Mobility_Report.csv', header = T, na.strings ="") %>% 
+  mutate(date = as.Date(date)) %>% 
+  filter(is.na(sub_region_2) & !is.na(sub_region_1)) %>% 
+  select(c(date, sub_region_1, retail_and_recreation_percent_change_from_baseline,
+           grocery_and_pharmacy_percent_change_from_baseline, parks_percent_change_from_baseline,
+           transit_stations_percent_change_from_baseline, workplaces_percent_change_from_baseline,
+           residential_percent_change_from_baseline)) %>% 
+  'colnames<-'(c('date','state_name','Mob_ret_rec','Mob_gro_pha', 'Mob_parks','Mob_transit','Mob_work','Mob_res'))
+
+
+#Seasonal adjusted daily data (only taking residential mobility and retail and recreation
+
+mobility <- mobility_original %>%
+  select(date, state_name, Mob_res, Mob_ret_rec) %>% mutate(Mob_res_SA = NA, Mob_ret_SA = NA)
+
+states <- unique(mobility$state_name)
+for(i in 1:length(states)){
+  state <- states[i]
+  
+  state_data <- mobility %>% filter(state_name == state) %>% select(date, Mob_res, Mob_ret_rec)
+  #Residential index time series adjustment
+  ts1 <-
+    ts(state_data$Mob_res,
+       frequency = 7,
+       start = c(2020, as.numeric(format(
+         as.Date('2020-02-15'), "%j"
+       ))))
+  decompose_ts1 <- decompose(ts1, 'additive')
+  adjust_ts1 <- ts1 - decompose_ts1$seasonal
+  #Retail and recreation time series adjustment
+  ts2 <-
+    ts(state_data$Mob_ret_rec,
+       frequency = 7,
+       start = c(2020, as.numeric(format(
+         as.Date('2020-02-15'), "%j"
+       ))))
+  decompose_ts2 <- decompose(ts2, 'additive')
+  adjust_ts2 <- ts2 - decompose_ts2$seasonal
+  
+  mobility[mobility$state_name == state,]$Mob_res_SA <- adjust_ts1
+  mobility[mobility$state_name == state,]$Mob_ret_SA <- adjust_ts2
+}
+
+#Computing 30 days change (to obtain the monthly change)
+mobility <- mobility %>% mutate(delta_Mob_res_SA = NA, delta_Mob_ret_SA=NA)
+states <- unique(mobility$state_name)
+for(i in 1:length(states)){
+  state <- states[i]
+  
+  mob1 <- mobility %>% filter(state_name == state) %>% select(Mob_res_SA)
+  delta_mob1 <- unname(unlist(mob1/lag(mob1, n=30)-1))
+  
+  mob2 <- mobility %>% filter(state_name == state) %>% select(Mob_ret_SA)
+  delta_mob2 <- unname(unlist(mob2/lag(mob2, n=30)-1))
+  
+  mobility[mobility$state_name == state,]$delta_Mob_res_SA <- delta_mob1
+  mobility[mobility$state_name == state,]$delta_Mob_ret_SA <- delta_mob2
+}
+
+
+
+#########################
+#### Stringency data ####
+#########################
+
+#load data
+stringency_us <- read.csv("https://raw.githubusercontent.com/OxCGRT/USA-covid-policy/master/data/OxCGRT_US_latest.csv")
+stringency_us <- stringency_us %>%
+  select(Date, RegionName, StringencyIndex) %>% filter(RegionName != '')
+
+#Modify name of one state
+stringency_us[stringency_us$RegionName == 'Washington DC',]$RegionName <- rep('District of Columbia', length(stringency_us[stringency_us$RegionName == 'Washington DC',]$RegionName))
+
+#Convert dates
+stringency_us <- stringency_us %>% mutate(date = as.Date(as.character(Date), '%Y%m%d')) %>% 
+  select(date, RegionName, StringencyIndex) %>% 
+  'colnames<-'(c('date','state_name', 'stringency_index'))
+
+#Compute monthly change of stringency index
+stringency_us <- stringency_us %>% mutate(delta_stringency_index = NA)
+states <- unique(stringency_us$state_name)
+for(i in 1:length(states)){
+  state <- states[i]
+  
+  str <- stringency_us %>% filter(state_name == state) %>%
+    select(stringency_index)
+  delta_str <- unname(unlist(str - lag(str, n=30)))
+  
+  stringency_us[stringency_us$state_name == state,]$delta_stringency_index <- delta_str
+}
+
+
+#########################
+##### Merge all data ####
+#########################
+
+#Merge employment and mobility
+
+data <- merge(employment_data, mobility, by.x=c('date','state_name'))
+data <- merge(data, stringency_us, by.x = c('date','state_name'))
+
+
+modified_data <- data
+colnames(modified_data)[4] <- c("change_in_emp")
+colnames(modified_data)[5] <- c("Sector")
+
+
+#########################
+##### Write csv ####
+#########################
+
+write.csv(modified_data, file = "covid_econ.csv")
+
+###########################
+#### Control variables ####
+###########################
+
+###Covid Cases and deaths per state####
+
+#Read data from CDC
+covid_cases_original  <- read.socrata("https://data.cdc.gov/resource/9mfq-cb36.json")
+states_abb <- read.csv('data/States_abbrev.csv')%>% 
+  'colnames<-'(c('state_name', 'abbrev','code')) %>%
+  select(state_name, code)
+
+#Data management
+covid_cases <- merge(covid_cases_original, states_abb, by.x = 'state', by.y = 'code', all.x = T) %>%
+  mutate(date = as.Date(submission_date)) %>%
+  select(state_name, date, tot_cases, tot_death) %>%
+  arrange(state_name,date) %>%
+  mutate(delta_monthly_tot_cases = NA, delta_monthly_tot_death = NA) %>%
+  drop_na(state_name)
+
+#Computing 30 day percent change of total cases and deaths
+for(state in states){
+  cases <- covid_cases %>% filter(state_name == state) %>% select(tot_cases) %>% unlist()
+  delta_cases <- as.numeric(cases)/lag(as.numeric(cases),30)-1
+  covid_cases[covid_cases$state_name == state,]$delta_monthly_tot_cases <- delta_cases
+  
+  death <- covid_cases %>% filter(state_name == state) %>% select(tot_death) %>% unlist()
+  delta_death <- as.numeric(death)/lag(as.numeric(death),30)-1
+  covid_cases[covid_cases$state_name == state,]$delta_monthly_tot_death <- delta_death
+}
+
+
+###Blue and red states
+#Blues: vote for Democrats constantly since 2000
+#Reds: Vote for Republicans constantly since 2000
+#Source: https://www.270towin.com/content/blue-and-red-states
+blue <- c('WA','OR','CA','MN','IL','NY','HI','VT','ME','MA','RI','CT','NJ','DE','MD','DC','ME')
+red <- c('AK','ID','MT','WY','UT','ND','SD','NE','KS','OK','TX','MO','AR','LA','IN','KY','TN','MS','AL','WV','SC')
+toss <- c('NV', 'AZ','CO','NM','IA','WI','MI','IN','OH','PA','NH','VA','NC','GA','FL')
+
+states_color <- states_abb %>% mutate(blue_state = NA, red_state = NA, toss_state = NA)
+states_color$blue_state <- ifelse(states_abb$code %in% blue, 1, 0)
+states_color$red_state <- ifelse(states_abb$code %in% red, 1, 0)
+states_color$toss_state <- ifelse(states_abb$code %in% toss, 1, 0)
+
+states_color <- states_color %>% select(state_name, blue_state, red_state, toss_state)
+
+
+## Merge control variables to the original data base
+data_with_control <- merge(modified_data, covid_cases, by.x=c('date','state_name'))
+data_with_control <- merge(data_with_control, states_color, by.x='state_name')
+
+```
+
+### Note: Seasonal adjustment of Google Mobility Data
+
+Since February of 2020, Google began publishing local mobility reports, which "show movement trends over time ordered by geographical areas and classified in various categories of places, such as shops and leisure spaces, supermarkets and pharmacies, parks , transportation stations, workplaces and residential areas".
+
+We chose to work with the Residential Mobility index, considering it to be the most representative index that represents the effect of Stay-at-home orders.
+
+Residential Mobility index is a non-seasonally adjusted daily data. So, in order to make it comparable with the seasonally adjusted employment data, we used an additive time series model to eliminate the weekly seasonality factor from the series. Below is one example for Alabama.
+
+```{r seasonal_adj}
+## Example for Alabama (weekly seasonal adjusted)
+example <- mobility %>% filter(state_name == 'Alabama') %>% select(date, Mob_res)
+
+ts <- ts(example$Mob_res, frequency = 7, start = c(2020,as.numeric(format(as.Date('2020-02-15'), "%j"))))
+
+plot(ts, xaxt='n', main='Alabama Residential Mobility Index (Original Time Series)')
+
+decompose_ts <- decompose(ts, 'additive')
+plot(decompose_ts,  xaxt='n')
+
+adjust_ts <- ts - decompose_ts$seasonal
+plot(adjust_ts, xaxt='n', main='Alabama Residential Mobility Index (Seasonal Adjusted Time Series)')
+```
+
+\newpage 
+
+### Data Manipulation
+
+```{r}
+#=================
+#data manipulation
+#=================
+
+modified_data_ols <- read.csv("covid_econ_control.csv")
+
+#drop state=DC from data set
+modified_data_ols <- modified_data_ols[!(modified_data_ols$state_name=="District of Columbia"),]
+
+#add squared term
+modified_data_ols$Mob_res_SA_sq <- (modified_data_ols$Mob_res_SA)^2
+
+#add exponential term
+modified_data_ols$Mob_res_SA_exp <- exp(modified_data_ols$Mob_res_SA)
+
+#sector as categorical variable
+modified_data_ols$Sector <- factor(modified_data_ols$Sector)
+
+#dates when mobility_exp is greater than the 95th percentile
+unique(modified_data_ols$date[modified_data_ols$Mob_res_SA_exp > quantile(modified_data_ols$Mob_res_SA_exp, 0.95)])
+
+extreme_dates <- 
+  unique(modified_data_ols$date[modified_data_ols$Mob_res_SA_exp > quantile(modified_data_ols$Mob_res_SA_exp, 0.95)])
+
+#exponentiate mobility for just the leisure&hospitality sector
+#square mobility for the rest
+modified_data_ols$f2_Mob_res_SA <- modified_data_ols$Mob_res_SA_sq
+
+modified_data_ols$f2_Mob_res_SA[modified_data_ols$Sector == "Leisure and Hospitality"] <-
+  modified_data_ols$Mob_res_SA_exp[modified_data_ols$Sector == "Leisure and Hospitality"]
+
+#create sine funciton for leisure
+
+modelsine <- lm(modified_data_ols$change_in_emp[modified_data_ols$Sector == "Leisure and Hospitality"] ~ sin(modified_data_ols$Mob_res_SA[modified_data_ols$Sector == "Leisure and Hospitality"]))
+
+coef(modelsine)
+
+modified_data_ols$f3_Mob_res_SA = modified_data_ols$Mob_res_SA
+
+modified_data_ols$f3_Mob_res_SA[modified_data_ols$Sector == "Leisure and Hospitality"] <- -0.00186462-0.003032714*sin(modified_data_ols$Mob_res_SA[modified_data_ols$Sector == "Leisure and Hospitality"])
+
+plot(modified_data_ols$f3_Mob_res_SA[modified_data_ols$Sector == "Leisure and Hospitality"],modified_data_ols$change_in_emp[modified_data_ols$Sector == "Leisure and Hospitality"])
+
+#create parabolic function
+
+modelpara <- lm(modified_data_ols$change_in_emp[modified_data_ols$Sector == "Construction"] ~ (modified_data_ols$Mob_res_SA[modified_data_ols$Sector == "Construction"])^2)
+
+coef(modelpara)
+
+modified_data_ols$f3_Mob_res_SA[modified_data_ols$Sector == "Construction"] <- 0.028387801-0.003327548*(modified_data_ols$Mob_res_SA[modified_data_ols$Sector == "Construction"])^2
+
+plot(modified_data_ols$f3_Mob_res_SA[modified_data_ols$Sector == "Construction"],modified_data_ols$change_in_emp[modified_data_ols$Sector == "Construction"])
+
+modelpara <- lm(modified_data_ols$change_in_emp[modified_data_ols$Sector == "Retail Trade"] ~ (modified_data_ols$Mob_res_SA[modified_data_ols$Sector == "Retail Trade"])^2)
+
+coef(modelpara)
+
+modified_data_ols$f3_Mob_res_SA[modified_data_ols$Sector == "Retail Trade"] <- 0.041067156-0.004524577*(modified_data_ols$Mob_res_SA[modified_data_ols$Sector == "Retail Trade"])^2
+
+plot(modified_data_ols$f3_Mob_res_SA[modified_data_ols$Sector == "Retail Trade"],modified_data_ols$change_in_emp[modified_data_ols$Sector == "Retail Trade"])
+
+```
+
+\newpage 
+
+# 2. Plots
+
+### Change in Employment by Sector 
+
+We see how employments in different sectors / different states were affected differently by COVID-19.
+
+```{r message = FALSE, warning = FALSE, out.width=c('50%', '50%'), fig.show='hold'}
+ggplot(data = modified_data,
+       aes(x = date, y = change_in_emp, color = Sector)) +
+  geom_smooth(se = FALSE) +
+  theme(legend.position = "none") +
+  labs(x = "Date", y = "Change in Employment", title = "Change in Employment (All Sectors)")
+
+modified_data2 <-
+  modified_data_ols[modified_data_ols$Sector == "Leisure and Hospitality" |
+                  modified_data_ols$Sector == "Financial Activities" |
+                  modified_data_ols$Sector == "Government", ]
+
+ggplot(data = modified_data2,
+       aes(x = date, y = change_in_emp, color = Sector)) +
+  geom_smooth(se = FALSE) + theme(legend.position = "bottom") +
+  theme_bw() +
+  labs(x = "Date", y = "Change in Unemployment", title = "Change in Employment (Selected Sectors)")
+```
+
+### Scatterplots - Mobility
+
+Though we see a negative relationship between *change in employment* and *residential mobility*, we observe that a linear model would not be sufficient to explain the relationship between mobility and employment. The linear model cannot capture the significant negative change in employment that takes place when residential mobility is high.
+
+By color coding, we noticed an interesting pattern. While for all other dates and all other sectors showed somewhat linear relationship (or slightly quadratic relationship) between mobility and change in employment, 2020-04-30 and Leisure&Hospitality Sector data showed a completely different relationship.
+
+```{r message = FALSE, warning = FALSE, out.width=c('50%', '50%'), fig.show='hold'}
+#Mobility Seasonally Adj
+ggplot(data = modified_data_ols, aes(x = Mob_res_SA, y = change_in_emp)) +
+  geom_point() + geom_smooth(method = lm) +
+  labs(x = "Residential Mobility (Season Adj)", y = "Change in Employment", title = "Change in Employment v. Residential Mobility (best fitting linear line)")
+
+ggplot(data = modified_data_ols, aes(x = Mob_res_SA, y = change_in_emp)) +
+  geom_point() + geom_smooth() +
+  labs(x = "Residential Mobility (Season Adj)", y = "Change in Employment", title = "Change in Employment v. Residential Mobility (best fitting curve)")
+```
+
+
+```{r message = FALSE, warning = FALSE, out.width=c('50%', '50%'), fig.show='hold'}
+ggplot(data = modified_data_ols, aes(x = Mob_res_SA, y = change_in_emp, color = Sector)) +
+  geom_point() + geom_smooth(se=FALSE) +
+  labs(x = "Residential Mobility (Season Adj)", y = "Change in Employment", title = "Change in Employment v. Residential Mobility (by sector)")
+
+ggplot(data = modified_data_ols, aes(x = Mob_res_SA, y = change_in_emp, color = date)) +
+  geom_point() + geom_smooth(se=FALSE) +
+  labs(x = "Residential Mobility (Season Adj)", y = "Change in Employment", title = "Change in Employment v. Residential Mobility (by date)")
+```
+
+To account for this, we first tried applying mobility squared for all the data points. The best-fitting curve became a bit more linear, but the linear model still could not capture the significant negative change in employment that takes place when residential mobility is high.
+
+By color coding, we could identify the nature of these data points with significantly negative *change in employment*. As predicted, these points were an intersection of Leisure and Hospitality Sector, and date=2020-04-30. Notice the curves for Leisure and date=2020-04-30 are still curved. This suggests a linear fit would not be sufficient for explaining the relationship between mobility squared and change in employment.
+
+```{r message = FALSE, warning = FALSE, out.width=c('50%', '50%'), fig.show='hold'}
+#Mobility Seasonally Adj Squared
+ggplot(data = modified_data_ols, aes(x = Mob_res_SA_sq, y = change_in_emp)) + geom_point() + geom_smooth(method = lm) +
+  labs(x = "Residential Mobility Squared (Season Adj)", y = "Change in Employment", title = "Change in Employment v. Residential Mobility Squared (best fitting linear line)")
+
+ggplot(data = modified_data_ols, aes(x = Mob_res_SA_sq, y = change_in_emp)) + geom_point() + geom_smooth() +
+  labs(x = "Residential Mobility Squared (Season Adj)", y = "Change in Employment", title = "Change in Employment v. Residential Mobility Squared (best fitting curve)")
+```
+
+```{r message = FALSE, warning = FALSE, out.width=c('50%', '50%'), fig.show='hold'}
+
+ggplot(data = modified_data_ols, aes(x = Mob_res_SA_sq, y = change_in_emp, color = Sector)) + geom_point() + geom_smooth(se=FALSE) +
+  labs(x = "Residential Mobility Squared (Season Adj)", y = "Change in Employment", title = "Change in Employment v. Residential Mobility Squared (by Sector)")
+
+ggplot(data = modified_data_ols, aes(x = Mob_res_SA_sq, y = change_in_emp, color = date)) + geom_point() + geom_smooth(se=FALSE) +
+  labs(x = "Residential Mobility Squared (Season Adj)", y = "Change in Employment", title = "Change in Employment v. Residential Mobility Squared (by date)")
+
+```
+
+So, we tried observing different functional forms of Mobility (i.e., f(mobility)). Here we look at 'exp(mobility)'. We noticed, by looking at the steep kink of the curve, that the performance of a linear model was worse here than the squared mobility above. Also, we noticed what's driving the curve were the outliers at the far right. Again, by color coding, we could identify the nature of these outliers - they were an intersection of state=New York and date=2020-04-30. 
+
+```{r message = FALSE, warning = FALSE, out.width=c('50%', '50%'), fig.show='hold'}
+#Mobility Seasonally Adj Squared
+ggplot(data = modified_data_ols, aes(x = Mob_res_SA_exp, y = change_in_emp)) + geom_point() + geom_smooth(method = lm, se=FALSE) +
+  labs(x = "exp(Residential Mobility (Season Adj))", y = "Change in Employment", title = "Change in Employment v. exp(Residential Mobility) (best fitting linear line)")
+
+ggplot(data = modified_data_ols, aes(x = Mob_res_SA_exp, y = change_in_emp)) + geom_point() + geom_smooth(se=FALSE) +
+  labs(x = "exp(Residential Mobility (Season Adj))", y = "Change in Employment", title = "Change in Employment v. exp(Residential Mobility) (best fitting curve)")
+```
+
+
+```{r message = FALSE, warning = FALSE, out.width=c('50%', '50%'), fig.show='hold'}
+ggplot(data = modified_data_ols, aes(x = Mob_res_SA_exp, y = change_in_emp, color=date)) + geom_point() + geom_smooth(se=FALSE) +
+  labs(x = "exp(Residential Mobility (Season Adj))", y = "Change in Employment", title = "Change in Employment v. Residential Mobility (best fitting curve)")
+```
+
+### Scatterplots - Stringency
+
+We see a fairly linear relationship between stringency and change in employment. We could have very well tried polynomial terms of stringency, but that seemed unnecessary given how flat the regression line is.
+```{r message = FALSE, warning = FALSE, out.width=c('50%', '50%'), fig.show='hold'}
+#Stringency
+ggplot(data = modified_data_ols, aes(x = stringency_index, y = change_in_emp)) + geom_point() + geom_smooth(method = lm) +
+  labs(x = "Change in Stringency Index", y = "Change in Employment", title = "Change in Employment v. Change in Stringency Index (best fitting linear line)")
+
+#Stringency
+ggplot(data = modified_data_ols, aes(x = delta_stringency_index, y = change_in_emp)) + geom_point() + geom_smooth() +
+  labs(x = "Change in Stringency Index", y = "Change in Employment", title = "Change in Employment v. Change in Stringency Index (best fitting curve)")
+```
+
+### Scatterplots - Relationship between explanatory variables (Stringency and Mobility)
+We see a fairly linear correlation between stringency and mobility (correlation coefficient = 0.67).
+```{r message = FALSE, warning = FALSE, out.width=c('50%'), fig.show='hold'}
+#Stringency and Mobility
+ggplot(data = modified_data_ols, aes(x = stringency_index, y = Mob_res_SA)) + geom_point() + geom_smooth(method=lm)
+
+#drop NAs to calc correlation
+modified_data_ols_no_na <- modified_data_ols[!is.na(modified_data_ols$stringency_index),]
+
+#correlation
+cor(modified_data_ols_no_na$stringency_index, modified_data_ols_no_na$Mob_res_SA)
+
+```
+
+\newpage 
+
+# 3. Model Fitting
+Based on our data analysis, we believe that the change in employment for a given state, time, and sector can be predicted using mobility, stringency, and sector composition in the following formulation:
+
+$$\Delta Emp_{s,t,sec} = \alpha + \mu_{sec} + \beta_{1} f(Mob_{s,t}) + \beta_{2} String_{s,t} + \beta_{3} f(Mob_{s,t})*Sector_{s,t} + \beta_{4} String_{s,t}*Sector_{s,t} + X_{s,t}*\Gamma + \epsilon_{s,t,sec}$$
+
+where
+
+* $\Delta Emp_{s,t,sec}$ is the change in employment for a given state (in the U.S.), at a given time (limited to the pandemic era; 02/01/2020-06/01/2021), for a given sector (one of 12)
+
+* $\alpha$ is the global intercept and $\mu_{sec}$ is the local intercept that varies for each sector.
+
+* $Mob_{s,t}$ is the seasonally adjusted residential mobility of a given state at a given time (so higher when people move less). We think different sector takes a different functional form of Mobility. In this report, we tried: 
+    + 'mobility' for all the data set
+    + 'mobility squared' for all the data set
+    + 'exp(mobility)' for all the data set 
+    + 'exp(mobility)' for Leisure&Hospitality Sector, but 'mobility squared' for the rest of the sector.
+
+* $String_{s,t}$ is the stringency level of a given state at a given time (higher index means more stringent)
+
+* $Sector_{s,t}$ is the categorical variable.
+
+* $X_{s,t}$ encapsulates vectors of control variables such as the number of new COVID-19 cases in a given state at a given time. Note that, in this report, control variables are not yet included.
+
+Using data from 2/29/2020 to 1/31/2021, we will derive coefficients in our model using k-fold cross validation (k=10; the choice of k here is arbitrary). Then, using these coefficients, we plan to predict the 2021 April/May change in unemployment for a given state for a given sector. Finally, we will compute the RMSE between the predicted values and the actual values to assess the performance of our model. 
+
+In this project, we do not anticipate our model to necessarily produce the *lowest* RMSE. To minimize RMSE and let our model have the most predictive power, we should include as many features as possible that have any relevance to unemployment. However, taking this approach, the coefficient for the variables of our interest would lose most of their interpretability. Since we are interested in the interpretation of these coefficients as well as the predictive power of our model, we will instead take the approach of including only a handful of control variables in our model.
+
+In this report, instead of running the cross validation, we ran a linear model using the entire data set (using the formulation above) to first assess the fit of our model and the significance of the coefficient of each variable of our interest. 
+
+\newpage 
+
+# 4. OLS Table for the model
+
+### OLS1: With f(mobility) = mobility, for all sectors
+```{r}
+ols1 <- lm(change_in_emp ~ Mob_res_SA*Sector + stringency_index*Sector , data = modified_data_ols)
+summary(ols1)
+
+```
+
+### OLS2: With f(mobility) = mobility squared, for all sectors
+We see that R squared improves quite significantly!
+```{r}
+ols2 <- lm(change_in_emp ~ Mob_res_SA_sq*Sector + stringency_index*Sector , data = modified_data_ols)
+summary(ols2)
+```
+
+### OLS3: With f(mobility) = exp(mobility), for all sectors
+As expected, exp(mobility) is a poor linear predictor of change in employment - R squared is much worse than mobility squared!
+```{r}
+ols3 <- lm(change_in_emp ~ Mob_res_SA_exp*Sector + stringency_index*Sector , data = modified_data_ols)
+summary(ols3)
+```
+
+### OLS4: With f(mobility) = exp(mobility), for Leisure&Hospitality while f(mobility) = mobility squared, for all other sectors
+The R-squared is worse than 'f(mobility) = mobility squared, for all sectors'. It seems like exp(mobility) is not the correct functional form after all. (this is somewhat expected based on the sine-like curve that fits Leisure and Mobility plot)
+```{r}
+ols4 <- lm(change_in_emp ~ f2_Mob_res_SA*Sector + stringency_index*Sector , data = modified_data_ols)
+summary(ols4)
+```
+
+### OLS5: To check, dropping mobility terms
+Without the mobility terms, R-squared drops significantly. This verifies the observation from our plot above (where the regression line for change in 'employment v. stringency' was flat). Namely, stringency by itself is not a sufficient predictor of change in employment.
+```{r echo=FALSE}
+ols5 <- lm(change_in_emp ~ stringency_index*Sector , data = modified_data_ols)
+summary(ols5)
+```
+\newpage 
+
+# 5. Residual analysis 
+For all residual plots, we noticed a decreasing trend in residuals (as opposed to it being random). That is our models are systematically underestimating high positive (or negative) change in employment values.
+
+These suggest that we use some sine-like function for our f(mobility)! 
+
+```{r message = FALSE, warning = FALSE, out.width=c('50%', '50%'), fig.show='hold'}
+#Source: https://otexts.com/fpp2/residuals.html
+
+#OLS1
+## Fitted values vs residuals
+mod_ols1 <- fortify(ols1)
+ggplot(mod_ols1, aes(x = .fitted, y = .resid)) + geom_point() +
+  theme_bw()+
+  labs(x = "Fitted Values", y = "Residuals", title = "OLS1 Residuals")
+
+#OLS2
+## Fitted values vs residuals
+mod_ols2 <- fortify(ols2)
+ggplot(mod_ols2, aes(x = .fitted, y = .resid)) + geom_point() +
+  theme_bw()+
+  labs(x = "Fitted Values", y = "Residuals", title = "OLS2 Residuals")
+```
+
+
+```{r message = FALSE, warning = FALSE, out.width=c('50%', '50%'), fig.show='hold'}
+#OLS3
+## Fitted values vs residuals
+mod_ols3 <- fortify(ols3)
+ggplot(mod_ols3, aes(x = .fitted, y = .resid)) + geom_point() +
+  theme_bw()+
+  labs(x = "Fitted Values", y = "Residuals", title = "OLS3 Residuals")
+
+#OLS4
+## Fitted values vs residuals
+mod_ols4 <- fortify(ols4)
+ggplot(mod_ols4, aes(x = .fitted, y = .resid)) + geom_point() +
+  theme_bw()+
+  labs(x = "Fitted Values", y = "Residuals", title = "OLS4 Residuals")
+
+#doing sine and parabolic transformaiton
+ols5 <- lm(change_in_emp ~ f3_Mob_res_SA*Sector + stringency_index*Sector , data = modified_data_ols)
+summary(ols5)
+mod_ols5 <- fortify(ols5)
+ggplot(mod_ols5, aes(x = .fitted, y = .resid)) + geom_point() +
+  theme_bw()+
+  labs(x = "Fitted Values", y = "Residuals", title = "OLS5 Residuals")
+
+```
+
+\newpage 
+
+# 6. Conclusion
+
+The project started from the idea that mobility, stringency, and sector composition (and some additional control variables) would sufficiently predict the change in unemployment rate of a given state, for a given sector, at a certain month-end date during the pandemic era.
+
+From this report, we notice a couple of things (note that this is a preliminary analysis of our model; we expect the coefficients will be adjusted once we add more control variables in our model going forward):
+
+* The coefficient for the squared Mobility was statistically significant.
+
+* The coefficient for the stringency was statistically significant. However, stringency itself cannot well predict change in employment.
+
+* The local intercept for the Leisure and hospitality sector, which depends heavily on person-to-person contact, showed statistical significance .
+
+* Most of the coefficients for the interaction term, $f(Mob_{s,t})*Sector_{s,t}$ were statistically significant, while only a handful of the coefficients for the interaction term, $f(String_{s,t})*Sector_{s,t}$ were statistically significant. 
+
+
+Going forward, we plan to enhance our model by following the below steps.
+
+1. Find a functional form of mobility that can capture the deep fluctuation in change in employment that we see (especially from Leisure&Hospitality sector).
+
+2. Investigate the possibility of the impact that lead/lag of f(mobility) has on change in employment.
+
+3. Add more control variables to our model. Some candidates include: new COVID cases, share of elderly people, 2016 Trump Vote share, and Bartik-style (method of isolating local labor demand changes) predicted job loss.
+
+As discussed, after we enhance our model, we plan to:
+
+1. Run a cross validation to contrive a RMSE-minimizing set of coefficients.
+
+2. Using these coefficients, predict April/May 2021 change in unemployment data once the data for independent variables become available.
+
+3. Assess our prediction by computing RMSE between the predicted and the real values.
+
+Finally, it is worth noting that we will not be able to make a causal conclusion based on the coefficient we will obtain at the end of the day. This is because we face the endogeneity problem. Namely, the direction of the causal relationship could go both ways when it comes to the relationship between mobility and unemployment. To make a causal claim, we would need to limit our time frame and use additional econometric tools so that we can treat mobility as a random assignment.
+
+```{r message = FALSE, warning = FALSE, out.width=c('50%', '50%'), fig.show='hold'}
+#CV for optimal coefficients
+
+set.seed(42) 
+
+#Split dataset
+
+split_date<- as.Date(c("2021-03-31"))
+
+training <- modified_data_ols[modified_data_ols['date']<=split_date,]
+test <- modified_data_ols[modified_data_ols['date']<=split_date,]
+
+trainX=subset(training,select=-c(change_in_emp))
+trainY=training['change_in_emp']
+
+testX=subset(test,select=-c(change_in_emp))
+testY=test['change_in_emp']
+  
+# cross-validation - 5 fold
+train_control <- trainControl(method = "cv", number = 5)
+  
+model <- train(change_in_emp ~ f3_Mob_res_SA*Sector + stringency_index*Sector, data = training, method = "lm",
+               trControl = train_control)
+  
+print(model)
+
+#prediction
+
+predict(model)
+
+predTargets <- extractPrediction(model,
+                                 testX = testX,
+                                 testY = testY)
+
+plotObsVsPred(predTargets)
+
+#RMSE between fitted and real
+
+RMSE=rmse(testY,predTargets['pred'])
+print(RMSE)
+
+```
+
+
